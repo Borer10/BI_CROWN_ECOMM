@@ -1,12 +1,8 @@
 name: Shopify ETL Incremental
 
 on:
-  # GitHub usa UTC.
-  # Este exemplo roda de hora em hora, minuto 10, das 08:10 às 22:10 no Brasil (UTC-3)
-  # => 11:10–01:10 UTC (por isso 2 linhas)
   schedule:
-    - cron: "10 11-23 * * *"
-    - cron: "10 0-1 * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch: {}
 
 permissions:
