@@ -1,0 +1,57 @@
+line_item_id,order_id,order_updated_at,sku,name,quantity,unit_price,currency
+gid://shopify/LineItem/15010169684142,gid://shopify/Order/6320970432686,2025-12-31T03:20:34Z,DI11004O,Caneta Crown Personalizada Diamond - Dourada,1,122.9,BRL
+gid://shopify/LineItem/15010176827566,gid://shopify/Order/6320973283502,2025-12-31T03:23:07Z,DI12601D,Caneta Crown Personalizada Metal Capricci Esferográfica - Bordo,1,134.9,BRL
+gid://shopify/LineItem/15010263859374,gid://shopify/Order/6321012605102,2025-12-31T03:58:25Z,CA32005P,CARGA CARTUCHO TINTEIRO CROWN TINTEIRO | CA32005 - Preto,1,17.9,BRL
+gid://shopify/LineItem/15010263892142,gid://shopify/Order/6321012605102,2025-12-31T03:58:25Z,CA22007A,CARGA CROWN ROLLERBALL | CA22007 - Azul,1,21.9,BRL
+gid://shopify/LineItem/15010263924910,gid://shopify/Order/6321012605102,2025-12-31T03:58:25Z,DI22627O,Caneta Crown Personalizada Metal Capricci Roller - Dourada,1,187.9,BRL
+gid://shopify/LineItem/15010263957678,gid://shopify/Order/6321012605102,2025-12-31T03:58:25Z,DI32616B,Caneta Crown Personalizada Metal Capricci Tinteiro - Branca,1,212.9,BRL
+gid://shopify/LineItem/15010263990446,gid://shopify/Order/6321012605102,2025-12-31T03:58:25Z,DI32616O,Caneta Crown Personalizada Metal Capricci Tinteiro - Dourada,1,212.9,BRL
+gid://shopify/LineItem/15010448900270,gid://shopify/Order/6321099505838,2025-12-31T05:39:07Z,DI11004F,Caneta Crown Personalizada Diamond - Rose,1,122.9,BRL
+gid://shopify/LineItem/15010833105070,gid://shopify/Order/6321313579182,2025-12-31T10:05:06Z,DI12601X,Caneta Crown Personalizada Metal Capricci Esferográfica - Preta e Prata,1,134.9,BRL
+gid://shopify/LineItem/15010833137838,gid://shopify/Order/6321313579182,2025-12-31T10:05:06Z,DI13904A,Caneta Crown Personalizada Metal Veneto Esferográfica - Azul,1,132.9,BRL
+gid://shopify/LineItem/15010848932014,gid://shopify/Order/6321322164398,2025-12-31T10:21:49Z,DI10076P,Caneta Crown Personalizada Metal Otawa Esferográfica - Preta,1,69.9,BRL
+gid://shopify/LineItem/15010848964782,gid://shopify/Order/6321322164398,2025-12-31T10:21:49Z,DI10076V,Caneta Crown Personalizada Metal Otawa Esferográfica - Vermelha,1,69.9,BRL
+gid://shopify/LineItem/15010864398510,gid://shopify/Order/6321330553006,2025-12-31T10:36:21Z,DI19966P,Caneta Crown Personalizada Metal Treasure Esferográfica - Preta,1,109.9,BRL
+gid://shopify/LineItem/15010921382062,gid://shopify/Order/6321360896174,2025-12-31T11:27:04Z,DI32616A,Caneta Crown Personalizada Metal Capricci Tinteiro - Azul,1,212.9,BRL
+gid://shopify/LineItem/15010962636974,gid://shopify/Order/6321380556974,2025-12-31T12:05:28Z,DI12601P,Caneta Crown Personalizada Metal Capricci Esferográfica - Preta,1,134.9,BRL
+gid://shopify/LineItem/15010963521710,gid://shopify/Order/6321380819118,2025-12-31T12:05:41Z,DI11004F,Caneta Crown Personalizada Diamond - Rose,1,122.9,BRL
+gid://shopify/LineItem/15010972958894,gid://shopify/Order/6321384358062,2025-12-31T12:11:43Z,DI38008S,Caneta Crown Personalizada Metal Geek Tinteiro - Prata,1,119.9,BRL
+gid://shopify/LineItem/15011007758510,gid://shopify/Order/6321401921710,2025-12-31T12:44:02Z,DI19841P,Caneta Crown Personalizada Metal President Chrome Esferografica Preta,1,274.9,BRL
+gid://shopify/LineItem/15011009101998,gid://shopify/Order/6321402544302,2025-12-31T12:45:01Z,DI10080B,Caneta Crown Personalizada Metal Liverpool Gold Esferográfica - Branca,1,89.9,BRL
+gid://shopify/LineItem/15011012083886,gid://shopify/Order/6321404051630,2025-12-31T12:47:21Z,DI10001P,Caneta Crown Personalizada Athenas Esferográfica - Preta (clip fume),1,74.9,BRL
+gid://shopify/LineItem/15011012116654,gid://shopify/Order/6321404051630,2025-12-31T12:47:21Z,DI10001F,Caneta Crown Personalizada Athenas Esferográfica - Fume (clip fume),1,74.9,BRL
+gid://shopify/LineItem/15011012149422,gid://shopify/Order/6321404051630,2025-12-31T12:47:21Z,DI10001B,Caneta Crown Personalizada Athenas Esferográfica - Azul (clip rose),1,74.9,BRL
+gid://shopify/LineItem/15011012182190,gid://shopify/Order/6321404051630,2025-12-31T12:47:21Z,DI10001R,Caneta Crown Personalizada Athenas Esferográfica - Fume (clip rose),1,74.9,BRL
+gid://shopify/LineItem/15011012214958,gid://shopify/Order/6321404051630,2025-12-31T12:47:21Z,DI10001R,Caneta Crown Personalizada Athenas Esferográfica - Fume (clip rose),1,74.9,BRL
+gid://shopify/LineItem/15011012247726,gid://shopify/Order/6321404051630,2025-12-31T12:47:21Z,DI10001R,Caneta Crown Personalizada Athenas Esferográfica - Fume (clip rose),1,74.9,BRL
+gid://shopify/LineItem/15011012280494,gid://shopify/Order/6321404051630,2025-12-31T12:47:21Z,DI10001K,Caneta Crown Personalizada Athenas Esferográfica - Preta (clip rose),1,74.9,BRL
+gid://shopify/LineItem/15011012313262,gid://shopify/Order/6321404051630,2025-12-31T12:47:21Z,DI10001K,Caneta Crown Personalizada Athenas Esferográfica - Preta (clip rose),1,74.9,BRL
+gid://shopify/LineItem/15011012346030,gid://shopify/Order/6321404051630,2025-12-31T12:47:21Z,DI10001B,Caneta Crown Personalizada Athenas Esferográfica - Azul (clip rose),1,74.9,BRL
+gid://shopify/LineItem/15011012378798,gid://shopify/Order/6321404051630,2025-12-31T12:47:21Z,DI10001B,Caneta Crown Personalizada Athenas Esferográfica - Azul (clip rose),1,74.9,BRL
+gid://shopify/LineItem/15011157246126,gid://shopify/Order/6321475715246,2025-12-31T14:18:22Z,DI19966P,Caneta Crown Personalizada Metal Treasure Esferográfica - Preta,1,109.9,BRL
+gid://shopify/LineItem/15011338879150,gid://shopify/Order/6321557274798,2025-12-31T15:42:17Z,CA17004P,CARGA CROWN ESFEROGRAFICA GEL TIPO PARKER | CA17004 - Preta,4,16.9,BRL
+gid://shopify/LineItem/15011579658414,gid://shopify/Order/6321661313198,2025-12-31T17:09:24Z,DI29422N,Caneta Crown Personalizada Metal Regent Roller Preta E Prata,1,249.9,BRL
+gid://shopify/LineItem/15011694313646,gid://shopify/Order/6321708302510,2025-12-31T17:47:10Z,DI39032P,Caneta Crown Personalizada Metal Versalles Tinteiro - Preta,1,267.9,BRL
+gid://shopify/LineItem/15012045422766,gid://shopify/Order/6321856512174,2025-12-31T19:40:10Z,DI39450P,Caneta Crown Personalizada Metal Orient Tinteiro Titanium - Preta,1,214.9,BRL
+gid://shopify/LineItem/15012087267502,gid://shopify/Order/6321875517614,2025-12-31T19:55:36Z,DI19966N,Caneta Crown Personalizada Metal Treasure Esferográfica - Prata e Dourado,1,109.9,BRL
+gid://shopify/LineItem/15012089430190,gid://shopify/Order/6321876631726,2025-12-31T19:56:34Z,DI11481T,Caneta Crown Personalizada Supreme Esferográfica - Fumê,1,230.9,BRL
+gid://shopify/LineItem/15012106567854,gid://shopify/Order/6321884037294,2025-12-31T20:03:03Z,DI10076S,Caneta Crown Personalizada Metal Otawa Esferográfica - Prata,1,69.9,BRL
+gid://shopify/LineItem/15012118036654,gid://shopify/Order/6321888395438,2025-12-31T20:06:54Z,DI10076P,Caneta Crown Personalizada Metal Otawa Esferográfica - Preta,1,69.9,BRL
+gid://shopify/LineItem/15012118069422,gid://shopify/Order/6321888395438,2025-12-31T20:06:54Z,DI10076V,Caneta Crown Personalizada Metal Otawa Esferográfica - Vermelha,1,69.9,BRL
+gid://shopify/LineItem/15012118102190,gid://shopify/Order/6321888395438,2025-12-31T20:06:54Z,DI10076F,Caneta Crown Personalizada Metal Otawa Esferográfica - Fumê,1,69.9,BRL
+gid://shopify/LineItem/15012118134958,gid://shopify/Order/6321888395438,2025-12-31T20:06:54Z,DI10076F,Caneta Crown Personalizada Metal Otawa Esferográfica - Fumê,1,69.9,BRL
+gid://shopify/LineItem/15012118167726,gid://shopify/Order/6321888395438,2025-12-31T20:06:54Z,DI10076F,Caneta Crown Personalizada Metal Otawa Esferográfica - Fumê,1,69.9,BRL
+gid://shopify/LineItem/15012118200494,gid://shopify/Order/6321888395438,2025-12-31T20:06:54Z,DI10076F,Caneta Crown Personalizada Metal Otawa Esferográfica - Fumê,1,69.9,BRL
+gid://shopify/LineItem/15012118233262,gid://shopify/Order/6321888395438,2025-12-31T20:06:54Z,DI10076P,Caneta Crown Personalizada Metal Otawa Esferográfica - Preta,1,69.9,BRL
+gid://shopify/LineItem/15012118266030,gid://shopify/Order/6321888395438,2025-12-31T20:06:54Z,DI10076V,Caneta Crown Personalizada Metal Otawa Esferográfica - Vermelha,1,69.9,BRL
+gid://shopify/LineItem/15012118298798,gid://shopify/Order/6321888395438,2025-12-31T20:06:54Z,DI10076P,Caneta Crown Personalizada Metal Otawa Esferográfica - Preta,1,69.9,BRL
+gid://shopify/LineItem/15012118331566,gid://shopify/Order/6321888395438,2025-12-31T20:06:54Z,DI10076F,Caneta Crown Personalizada Metal Otawa Esferográfica - Fumê,1,69.9,BRL
+gid://shopify/LineItem/15012118364334,gid://shopify/Order/6321888395438,2025-12-31T20:06:54Z,DI10076F,Caneta Crown Personalizada Metal Otawa Esferográfica - Fumê,1,69.9,BRL
+gid://shopify/LineItem/15012307337390,gid://shopify/Order/6321963958446,2025-12-31T21:07:09Z,DI19966N,Caneta Crown Personalizada Metal Treasure Esferográfica - Prata e Dourado,1,109.9,BRL
+gid://shopify/LineItem/15012406689966,gid://shopify/Order/6322003673262,2025-12-31T21:43:01Z,DI19966P,Caneta Crown Personalizada Metal Treasure Esferográfica - Preta,1,109.9,BRL
+gid://shopify/LineItem/15012406722734,gid://shopify/Order/6322003673262,2025-12-31T21:43:01Z,DI19966P,Caneta Crown Personalizada Metal Treasure Esferográfica - Preta,1,109.9,BRL
+gid://shopify/LineItem/15012413538478,gid://shopify/Order/6322006196398,2025-12-31T21:45:25Z,DI12601P,Caneta Crown Personalizada Metal Capricci Esferográfica - Preta,1,134.9,BRL
+gid://shopify/LineItem/15012413571246,gid://shopify/Order/6322006196398,2025-12-31T21:45:25Z,CA12009P,CARGA CROWN ESFEROGRAFICA TIPO CROSS | CA12009 - Preto,1,18.9,BRL
+gid://shopify/LineItem/15012421075118,gid://shopify/Order/6322008621230,2025-12-31T21:52:20Z,DI38008B,Caneta Crown Personalizada Metal Geek Tinteiro - Branca,1,119.9,BRL
+gid://shopify/LineItem/15012457349294,gid://shopify/Order/6322024906926,2025-12-31T22:02:57Z,DI11004F,Caneta Crown Personalizada Diamond - Rose,1,122.9,BRL
+gid://shopify/LineItem/15012480975022,gid://shopify/Order/6322034671790,2025-12-31T22:11:54Z,DI19966P,Caneta Crown Personalizada Metal Treasure Esferográfica - Preta,1,109.9,BRL
