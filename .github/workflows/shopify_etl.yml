@@ -45,3 +45,26 @@ jobs:
             git diff --staged --quiet || git commit -m "Update state.json (checkpoint)"
             git push
           fi
+		
+	      - name: Send email on failure
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          secure: false
+          username: ${{ secrets.ALERT_EMAIL_FROM }}
+          password: ${{ secrets.ALERT_EMAIL_PASSWORD }}
+          subject: "❌ Erro no ETL Shopify - BI Crown"
+          to: ${{ secrets.ALERT_EMAIL_TO }}
+          from: BI Crown ETL <${{ secrets.ALERT_EMAIL_FROM }}>
+          body: |
+            O job de ETL Shopify falhou.
+
+            Repositório: ${{ github.repository }}
+            Workflow: ${{ github.workflow }}
+            Job: ${{ github.job }}
+            Data: ${{ github.run_started_at }}
+
+            Logs:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
