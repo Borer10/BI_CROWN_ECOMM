@@ -1,14 +1,7 @@
-
 .env
 venv/
 __pycache__/
 *.pyc
 logs/
 shopify_incremental.lock
-
-.env
-venv/
-__pycache__/
-*.pyc
-logs/
-shopify_incremental.lock
+.DS_Store
