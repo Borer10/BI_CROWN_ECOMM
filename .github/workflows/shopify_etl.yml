@@ -1,0 +1,51 @@
+name: Shopify ETL Incremental
+
+on:
+  # GitHub usa UTC.
+  # Este exemplo roda de hora em hora, minuto 10, das 08:10 às 22:10 no Brasil (UTC-3)
+  # => 11:10–01:10 UTC (por isso 2 linhas)
+  schedule:
+    - cron: "10 11-23 * * *"
+    - cron: "10 0-1 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  run-etl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run ETL
+        env:
+          SHOPIFY_SHOP: ${{ secrets.SHOPIFY_SHOP }}
+          SHOPIFY_ADMIN_TOKEN: ${{ secrets.SHOPIFY_ADMIN_TOKEN }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          SHOPIFY_API_VERSION: "2025-01"
+        run: |
+          python shopify_to_postgres_incremental.py
+
+      - name: Commit updated state.json
+        run: |
+          if [ -f state.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git diff --staged --quiet || git commit -m "Update state.json (checkpoint)"
+            git push
+          fi
