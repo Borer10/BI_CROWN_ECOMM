@@ -6,16 +6,12 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-
-concurrency:
-  group: shopify-etl
-  cancel-in-progress: false
+  contents: write
 
 jobs:
   run-etl:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repo
@@ -31,7 +27,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-            - name: Run ETL
+      - name: Run ETL
         env:
           SHOPIFY_SHOP: ${{ secrets.SHOPIFY_SHOP }}
           SHOPIFY_ADMIN_TOKEN: ${{ secrets.SHOPIFY_ADMIN_TOKEN }}
@@ -42,7 +38,7 @@ jobs:
           set -euo pipefail
           start_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          python shopify_to_postgres_incremental.py | tee etl.log
+          python shopify_to_postgres_incremental.py 2>&1 | tee etl.log
 
           end_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           last_ok=$(grep -E "OK: upsert|PARTIAL:" etl.log | tail -n 1 || true)
