@@ -31,7 +31,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run ETL
+            - name: Run ETL
         env:
           SHOPIFY_SHOP: ${{ secrets.SHOPIFY_SHOP }}
           SHOPIFY_ADMIN_TOKEN: ${{ secrets.SHOPIFY_ADMIN_TOKEN }}
@@ -39,7 +39,7 @@ jobs:
           SHOPIFY_API_VERSION: "2025-01"
           MAX_RUNTIME_MIN: "110"
         run: |
-          set -e
+          set -euo pipefail
           start_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           python shopify_to_postgres_incremental.py | tee etl.log

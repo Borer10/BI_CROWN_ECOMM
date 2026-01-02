@@ -68,25 +68,31 @@ set checkpoint = excluded.checkpoint,
     updated_at = now();
 """)
 
-def ensure_state_table(conn):
-    conn.execute(STATE_TABLE_DDL)
-
-def get_checkpoint(conn) -> datetime:
-    ensure_state_table(conn)
-    row = conn.execute(GET_STATE, {"pipeline": PIPELINE_NAME}).fetchone()
-    if not row:
-        return datetime.fromisoformat(DEFAULT_START.replace("Z", "+00:00"))
-    return row[0]  # datetime tz-aware
-
-def set_checkpoint(conn, checkpoint_dt: datetime):
-    ensure_state_table(conn)
-    conn.execute(UPSERT_STATE, {"pipeline": PIPELINE_NAME, "checkpoint": checkpoint_dt})
-
 def iso_z(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     dt = dt.astimezone(timezone.utc)
     return dt.isoformat().replace("+00:00", "Z")
+
+def gql(variables):
+    r = requests.post(URL, headers=HEADERS, json={"query": QUERY, "variables": variables}, timeout=60)
+    r.raise_for_status()
+    j = r.json()
+    if "errors" in j:
+        raise RuntimeError(j["errors"])
+    return j["data"]
+
+def money(set_obj):
+    try:
+        return float(set_obj["shopMoney"]["amount"])
+    except Exception:
+        return None
+
+def should_stop_soon():
+    if MAX_RUNTIME_MIN <= 0:
+        return False
+    elapsed_min = (time.time() - START_TIME) / 60.0
+    return elapsed_min >= MAX_RUNTIME_MIN
 
 # =========================
 # SHOPIFY QUERY
@@ -122,20 +128,6 @@ query Orders($first: Int!, $after: String, $query: String) {
   }
 }
 """
-
-def gql(variables):
-    r = requests.post(URL, headers=HEADERS, json={"query": QUERY, "variables": variables}, timeout=60)
-    r.raise_for_status()
-    j = r.json()
-    if "errors" in j:
-        raise RuntimeError(j["errors"])
-    return j["data"]
-
-def money(set_obj):
-    try:
-        return float(set_obj["shopMoney"]["amount"])
-    except Exception:
-        return None
 
 # =========================
 # UPSERTS
@@ -178,92 +170,19 @@ on conflict (line_item_id) do update set
   updated_db_at = now();
 """)
 
-def should_stop_soon():
-    if MAX_RUNTIME_MIN <= 0:
-        return False
-    elapsed_min = (time.time() - START_TIME) / 60.0
-    return elapsed_min >= MAX_RUNTIME_MIN
-
 def main():
     orders_count = 0
     items_count = 0
 
-    # conexão “longa” e commits por página (resumível)
     with engine.connect() as conn:
-        checkpoint_dt = get_checkpoint(conn)
-        since_dt = checkpoint_dt - SAFETY_WINDOW
-        since_str = iso_z(since_dt)
+        # ✅ tudo que mexe no DB precisa estar dentro de begin() para não deixar autobegin pendurado
+        with conn.begin():
+            conn.execute(STATE_TABLE_DDL)
+            row = conn.execute(GET_STATE, {"pipeline": PIPELINE_NAME}).fetchone()
+            if not row:
+                checkpoint_dt = datetime.fromisoformat(DEFAULT_START.replace("Z", "+00:00"))
+                conn.execute(UPSERT_STATE, {"pipeline": PIPELINE_NAME, "checkpoint": checkpoint_dt})
+            else:
+                checkpoint_dt = row[0]
 
-        query_filter = f"updated_at:>={since_str}"
-
-        after = None
-        max_seen_updated_dt = checkpoint_dt
-        max_seen_updated_str = iso_z(max_seen_updated_dt)
-
-        while True:
-            if should_stop_soon():
-                # salva checkpoint parcial e sai com sucesso
-                with conn.begin():
-                    set_checkpoint(conn, max_seen_updated_dt)
-                print(f"PARTIAL: upsert {orders_count} orders, {items_count} items. checkpoint={max_seen_updated_str}")
-                return
-
-            data = gql({"first": 100, "after": after, "query": query_filter})
-            edges = data["orders"]["edges"]
-
-            # transação por página
-            with conn.begin():
-                for e in edges:
-                    o = e["node"]
-                    cust = o.get("customer") or {}
-
-                    o_updated_dt = datetime.fromisoformat(o["updatedAt"].replace("Z", "+00:00"))
-                    if o_updated_dt > max_seen_updated_dt:
-                        max_seen_updated_dt = o_updated_dt
-                        max_seen_updated_str = iso_z(max_seen_updated_dt)
-
-                    conn.execute(UPSERT_ORDER, {
-                        "order_id": o["id"],
-                        "order_name": o["name"],
-                        "created_at": o["createdAt"],
-                        "updated_at": o["updatedAt"],
-                        "financial_status": o.get("displayFinancialStatus"),
-                        "fulfillment_status": o.get("displayFulfillmentStatus"),
-                        "currency": o.get("currencyCode"),
-                        "total_price": money(o.get("totalPriceSet") or {}),
-                        "customer_id": cust.get("id"),
-                        "customer_email": cust.get("email"),
-                    })
-                    orders_count += 1
-
-                    for li in ((o.get("lineItems") or {}).get("edges") or []):
-                        n = li["node"]
-                        conn.execute(UPSERT_ITEM, {
-                            "line_item_id": n["id"],
-                            "order_id": o["id"],
-                            "order_updated_at": o["updatedAt"],
-                            "sku": n.get("sku"),
-                            "name": n.get("name"),
-                            "quantity": n.get("quantity"),
-                            "unit_price": money(n.get("originalUnitPriceSet") or {}),
-                            "currency": (n.get("originalUnitPriceSet") or {}).get("shopMoney", {}).get("currencyCode"),
-                        })
-                        items_count += 1
-
-                # checkpoint salvo a cada página (resumível)
-                set_checkpoint(conn, max_seen_updated_dt)
-
-            page = data["orders"]["pageInfo"]
-            if not page["hasNextPage"]:
-                break
-            after = page["endCursor"]
-            time.sleep(0.35)
-
-    print(f"OK: upsert {orders_count} orders, {items_count} items. checkpoint={max_seen_updated_str}")
-
-if __name__ == "__main__":
-    try:
-        main()
-    finally:
-        if LOCK_FILE.exists():
-            LOCK_FILE.unlink()
+        since
