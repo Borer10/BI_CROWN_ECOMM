@@ -34,7 +34,27 @@ jobs:
           POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
           SHOPIFY_API_VERSION: "2025-01"
         run: |
-          python shopify_to_postgres_incremental.py
+          set -e
+          start_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          python shopify_to_postgres_incremental.py | tee etl.log
+
+          end_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          last_ok=$(grep -E "OK: upsert" etl.log | tail -n 1 || true)
+
+          {
+            echo "## Shopify ETL - Resumo"
+            echo ""
+            echo "- Início (UTC): \`$start_ts\`"
+            echo "- Fim (UTC): \`$end_ts\`"
+            echo ""
+            echo "### Último status"
+            if [ -n "$last_ok" ]; then
+              echo "\`$last_ok\`"
+            else
+              echo "_Não encontrei linha OK no log (ver logs completos)._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit updated state.json
         run: |
