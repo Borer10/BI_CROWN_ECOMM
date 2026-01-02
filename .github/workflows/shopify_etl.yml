@@ -3,7 +3,7 @@ name: Shopify ETL Incremental
 on:
   schedule:
     - cron: "*/30 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -36,7 +36,7 @@ jobs:
         run: |
           python shopify_to_postgres_incremental.py
 
-            - name: Commit updated state.json
+      - name: Commit updated state.json
         run: |
           if [ -f state.json ]; then
             git config user.name "github-actions[bot]"
@@ -51,13 +51,13 @@ jobs:
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
-          server_port: 587
-          secure: false
+          server_port: 465
+          secure: true
           username: ${{ secrets.ALERT_EMAIL_FROM }}
           password: ${{ secrets.ALERT_EMAIL_PASSWORD }}
           subject: "❌ Erro no ETL Shopify - BI Crown"
           to: ${{ secrets.ALERT_EMAIL_TO }}
-          from: BI Crown ETL <${{ secrets.ALERT_EMAIL_FROM }}>
+          from: ${{ secrets.ALERT_EMAIL_FROM }}
           body: |
             O job de ETL Shopify falhou.
 
