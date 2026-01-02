@@ -8,10 +8,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: shopify-etl
+  cancel-in-progress: false
+
 jobs:
   run-etl:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repo
@@ -33,6 +37,7 @@ jobs:
           SHOPIFY_ADMIN_TOKEN: ${{ secrets.SHOPIFY_ADMIN_TOKEN }}
           POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
           SHOPIFY_API_VERSION: "2025-01"
+          MAX_RUNTIME_MIN: "110"
         run: |
           set -e
           start_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -40,7 +45,7 @@ jobs:
           python shopify_to_postgres_incremental.py | tee etl.log
 
           end_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          last_ok=$(grep -E "OK: upsert" etl.log | tail -n 1 || true)
+          last_ok=$(grep -E "OK: upsert|PARTIAL:" etl.log | tail -n 1 || true)
 
           {
             echo "## Shopify ETL - Resumo"
@@ -52,7 +57,7 @@ jobs:
             if [ -n "$last_ok" ]; then
               echo "\`$last_ok\`"
             else
-              echo "_Não encontrei linha OK no log (ver logs completos)._"
+              echo "_Não encontrei linha OK/PARTIAL no log (ver logs completos)._"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

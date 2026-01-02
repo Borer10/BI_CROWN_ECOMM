@@ -22,13 +22,14 @@ except Exception as e:
     print(f"Erro ao criar lock file: {e}")
     sys.exit(1)
 
-# =========================
-# ENV
-# =========================
 SHOP = os.getenv("SHOPIFY_SHOP")
 TOKEN = os.getenv("SHOPIFY_ADMIN_TOKEN")
 VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-01")
 DB_URL = os.getenv("POSTGRES_URL")
+
+# limite “amigável” para não estourar timeout do Actions
+MAX_RUNTIME_MIN = int(os.getenv("MAX_RUNTIME_MIN", "0"))  # 0 = sem limite
+START_TIME = time.time()
 
 if not all([SHOP, TOKEN, DB_URL]):
     raise SystemExit("Faltou SHOPIFY_SHOP / SHOPIFY_ADMIN_TOKEN / POSTGRES_URL no .env")
@@ -74,20 +75,14 @@ def get_checkpoint(conn) -> datetime:
     ensure_state_table(conn)
     row = conn.execute(GET_STATE, {"pipeline": PIPELINE_NAME}).fetchone()
     if not row:
-        # fallback: início do projeto
         return datetime.fromisoformat(DEFAULT_START.replace("Z", "+00:00"))
-    # timestamptz volta como datetime tz-aware
-    return row[0]
+    return row[0]  # datetime tz-aware
 
 def set_checkpoint(conn, checkpoint_dt: datetime):
     ensure_state_table(conn)
-    conn.execute(
-        UPSERT_STATE,
-        {"pipeline": PIPELINE_NAME, "checkpoint": checkpoint_dt}
-    )
+    conn.execute(UPSERT_STATE, {"pipeline": PIPELINE_NAME, "checkpoint": checkpoint_dt})
 
 def iso_z(dt: datetime) -> str:
-    # garante UTC com Z
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     dt = dt.astimezone(timezone.utc)
@@ -183,76 +178,86 @@ on conflict (line_item_id) do update set
   updated_db_at = now();
 """)
 
+def should_stop_soon():
+    if MAX_RUNTIME_MIN <= 0:
+        return False
+    elapsed_min = (time.time() - START_TIME) / 60.0
+    return elapsed_min >= MAX_RUNTIME_MIN
+
 def main():
     orders_count = 0
     items_count = 0
 
-    with engine.begin() as conn:
-        # 1) checkpoint do Postgres
+    # conexão “longa” e commits por página (resumível)
+    with engine.connect() as conn:
         checkpoint_dt = get_checkpoint(conn)
-
-        # 2) janela de segurança de 2 horas
         since_dt = checkpoint_dt - SAFETY_WINDOW
         since_str = iso_z(since_dt)
 
         query_filter = f"updated_at:>={since_str}"
 
         after = None
-        max_seen_updated_dt = checkpoint_dt  # dt
-        max_seen_updated_str = iso_z(max_seen_updated_dt)  # string (para comparação/print)
+        max_seen_updated_dt = checkpoint_dt
+        max_seen_updated_str = iso_z(max_seen_updated_dt)
 
         while True:
+            if should_stop_soon():
+                # salva checkpoint parcial e sai com sucesso
+                with conn.begin():
+                    set_checkpoint(conn, max_seen_updated_dt)
+                print(f"PARTIAL: upsert {orders_count} orders, {items_count} items. checkpoint={max_seen_updated_str}")
+                return
+
             data = gql({"first": 100, "after": after, "query": query_filter})
             edges = data["orders"]["edges"]
 
-            for e in edges:
-                o = e["node"]
-                cust = o.get("customer") or {}
+            # transação por página
+            with conn.begin():
+                for e in edges:
+                    o = e["node"]
+                    cust = o.get("customer") or {}
 
-                # updatedAt vem em ISO 8601 com Z; convertemos para datetime UTC
-                o_updated_dt = datetime.fromisoformat(o["updatedAt"].replace("Z", "+00:00"))
+                    o_updated_dt = datetime.fromisoformat(o["updatedAt"].replace("Z", "+00:00"))
+                    if o_updated_dt > max_seen_updated_dt:
+                        max_seen_updated_dt = o_updated_dt
+                        max_seen_updated_str = iso_z(max_seen_updated_dt)
 
-                if o_updated_dt > max_seen_updated_dt:
-                    max_seen_updated_dt = o_updated_dt
-                    max_seen_updated_str = iso_z(max_seen_updated_dt)
-
-                conn.execute(UPSERT_ORDER, {
-                    "order_id": o["id"],
-                    "order_name": o["name"],
-                    "created_at": o["createdAt"],
-                    "updated_at": o["updatedAt"],
-                    "financial_status": o.get("displayFinancialStatus"),
-                    "fulfillment_status": o.get("displayFulfillmentStatus"),
-                    "currency": o.get("currencyCode"),
-                    "total_price": money(o.get("totalPriceSet") or {}),
-                    "customer_id": cust.get("id"),
-                    "customer_email": cust.get("email"),
-                })
-                orders_count += 1
-
-                for li in ((o.get("lineItems") or {}).get("edges") or []):
-                    n = li["node"]
-                    conn.execute(UPSERT_ITEM, {
-                        "line_item_id": n["id"],
+                    conn.execute(UPSERT_ORDER, {
                         "order_id": o["id"],
-                        "order_updated_at": o["updatedAt"],
-                        "sku": n.get("sku"),
-                        "name": n.get("name"),
-                        "quantity": n.get("quantity"),
-                        "unit_price": money(n.get("originalUnitPriceSet") or {}),
-                        "currency": (n.get("originalUnitPriceSet") or {}).get("shopMoney", {}).get("currencyCode"),
+                        "order_name": o["name"],
+                        "created_at": o["createdAt"],
+                        "updated_at": o["updatedAt"],
+                        "financial_status": o.get("displayFinancialStatus"),
+                        "fulfillment_status": o.get("displayFulfillmentStatus"),
+                        "currency": o.get("currencyCode"),
+                        "total_price": money(o.get("totalPriceSet") or {}),
+                        "customer_id": cust.get("id"),
+                        "customer_email": cust.get("email"),
                     })
-                    items_count += 1
+                    orders_count += 1
+
+                    for li in ((o.get("lineItems") or {}).get("edges") or []):
+                        n = li["node"]
+                        conn.execute(UPSERT_ITEM, {
+                            "line_item_id": n["id"],
+                            "order_id": o["id"],
+                            "order_updated_at": o["updatedAt"],
+                            "sku": n.get("sku"),
+                            "name": n.get("name"),
+                            "quantity": n.get("quantity"),
+                            "unit_price": money(n.get("originalUnitPriceSet") or {}),
+                            "currency": (n.get("originalUnitPriceSet") or {}).get("shopMoney", {}).get("currencyCode"),
+                        })
+                        items_count += 1
+
+                # checkpoint salvo a cada página (resumível)
+                set_checkpoint(conn, max_seen_updated_dt)
 
             page = data["orders"]["pageInfo"]
             if not page["hasNextPage"]:
                 break
-
             after = page["endCursor"]
             time.sleep(0.35)
-
-        # 3) salva checkpoint no Postgres (o maior updatedAt visto)
-        set_checkpoint(conn, max_seen_updated_dt)
 
     print(f"OK: upsert {orders_count} orders, {items_count} items. checkpoint={max_seen_updated_str}")
 
