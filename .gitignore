@@ -11,3 +11,6 @@ shopify_incremental.lock
 .DS_Store
 .DS_Store
 state.json
+
+.DS_Store
+*.bak
