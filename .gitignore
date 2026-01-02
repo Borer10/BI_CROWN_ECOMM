@@ -5,3 +5,6 @@ __pycache__/
 logs/
 shopify_incremental.lock
 .DS_Store
+
+.DS_Store
+*.bak
