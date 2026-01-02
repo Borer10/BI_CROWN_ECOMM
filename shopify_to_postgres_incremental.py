@@ -1,10 +1,10 @@
-import os, json, time
+import os, time, sys
 import requests
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
-from datetime import datetime, timezone
-import sys
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
 load_dotenv()
 
 # =========================
@@ -22,6 +22,9 @@ except Exception as e:
     print(f"Erro ao criar lock file: {e}")
     sys.exit(1)
 
+# =========================
+# ENV
+# =========================
 SHOP = os.getenv("SHOPIFY_SHOP")
 TOKEN = os.getenv("SHOPIFY_ADMIN_TOKEN")
 VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-01")
@@ -33,8 +36,66 @@ if not all([SHOP, TOKEN, DB_URL]):
 URL = f"https://{SHOP}/admin/api/{VERSION}/graphql.json"
 HEADERS = {"X-Shopify-Access-Token": TOKEN, "Content-Type": "application/json"}
 
-STATE_FILE = "state.json"
+# =========================
+# STATE NO POSTGRES (Supabase)
+# =========================
+PIPELINE_NAME = "shopify_orders"
+DEFAULT_START = "2025-01-01T00:00:00Z"
+SAFETY_WINDOW = timedelta(hours=2)
 
+engine = create_engine(DB_URL, pool_pre_ping=True)
+
+STATE_TABLE_DDL = text("""
+create table if not exists etl_state (
+  pipeline text primary key,
+  checkpoint timestamptz not null,
+  updated_at timestamptz not null default now()
+);
+""")
+
+GET_STATE = text("""
+select checkpoint
+from etl_state
+where pipeline = :pipeline;
+""")
+
+UPSERT_STATE = text("""
+insert into etl_state (pipeline, checkpoint, updated_at)
+values (:pipeline, :checkpoint, now())
+on conflict (pipeline) do update
+set checkpoint = excluded.checkpoint,
+    updated_at = now();
+""")
+
+def ensure_state_table(conn):
+    conn.execute(STATE_TABLE_DDL)
+
+def get_checkpoint(conn) -> datetime:
+    ensure_state_table(conn)
+    row = conn.execute(GET_STATE, {"pipeline": PIPELINE_NAME}).fetchone()
+    if not row:
+        # fallback: início do projeto
+        return datetime.fromisoformat(DEFAULT_START.replace("Z", "+00:00"))
+    # timestamptz volta como datetime tz-aware
+    return row[0]
+
+def set_checkpoint(conn, checkpoint_dt: datetime):
+    ensure_state_table(conn)
+    conn.execute(
+        UPSERT_STATE,
+        {"pipeline": PIPELINE_NAME, "checkpoint": checkpoint_dt}
+    )
+
+def iso_z(dt: datetime) -> str:
+    # garante UTC com Z
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+# =========================
+# SHOPIFY QUERY
+# =========================
 QUERY = """
 query Orders($first: Int!, $after: String, $query: String) {
   orders(first: $first, after: $after, query: $query, sortKey: UPDATED_AT, reverse: false) {
@@ -81,18 +142,9 @@ def money(set_obj):
     except Exception:
         return None
 
-def load_state():
-    if not os.path.exists(STATE_FILE):
-        return {"last_updated_at": "2025-01-01T00:00:00Z"}
-    with open(STATE_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_state(last_updated_at: str):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"last_updated_at": last_updated_at}, f)
-
-engine = create_engine(DB_URL, pool_pre_ping=True)
-
+# =========================
+# UPSERTS
+# =========================
 UPSERT_ORDER = text("""
 insert into public.orders (
   order_id, order_name, created_at, updated_at, financial_status, fulfillment_status,
@@ -132,17 +184,23 @@ on conflict (line_item_id) do update set
 """)
 
 def main():
-    state = load_state()
-    last = state["last_updated_at"]
-
-    query_filter = f"updated_at:>={last}"
-
-    after = None
-    max_seen_updated = last
     orders_count = 0
     items_count = 0
 
     with engine.begin() as conn:
+        # 1) checkpoint do Postgres
+        checkpoint_dt = get_checkpoint(conn)
+
+        # 2) janela de segurança de 2 horas
+        since_dt = checkpoint_dt - SAFETY_WINDOW
+        since_str = iso_z(since_dt)
+
+        query_filter = f"updated_at:>={since_str}"
+
+        after = None
+        max_seen_updated_dt = checkpoint_dt  # dt
+        max_seen_updated_str = iso_z(max_seen_updated_dt)  # string (para comparação/print)
+
         while True:
             data = gql({"first": 100, "after": after, "query": query_filter})
             edges = data["orders"]["edges"]
@@ -151,8 +209,12 @@ def main():
                 o = e["node"]
                 cust = o.get("customer") or {}
 
-                if o["updatedAt"] > max_seen_updated:
-                    max_seen_updated = o["updatedAt"]
+                # updatedAt vem em ISO 8601 com Z; convertemos para datetime UTC
+                o_updated_dt = datetime.fromisoformat(o["updatedAt"].replace("Z", "+00:00"))
+
+                if o_updated_dt > max_seen_updated_dt:
+                    max_seen_updated_dt = o_updated_dt
+                    max_seen_updated_str = iso_z(max_seen_updated_dt)
 
                 conn.execute(UPSERT_ORDER, {
                     "order_id": o["id"],
@@ -185,12 +247,14 @@ def main():
             page = data["orders"]["pageInfo"]
             if not page["hasNextPage"]:
                 break
+
             after = page["endCursor"]
             time.sleep(0.35)
 
-    save_state(max_seen_updated)
+        # 3) salva checkpoint no Postgres (o maior updatedAt visto)
+        set_checkpoint(conn, max_seen_updated_dt)
 
-    print(f"OK: upsert {orders_count} orders, {items_count} items. checkpoint={max_seen_updated}")
+    print(f"OK: upsert {orders_count} orders, {items_count} items. checkpoint={max_seen_updated_str}")
 
 if __name__ == "__main__":
     try:
