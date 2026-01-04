@@ -38,7 +38,7 @@ jobs:
           POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
           SHOPIFY_API_VERSION: "2025-01"
           BACKFILL_MODE: "1"
-          BACKFILL_WINDOW_DAYS: "30"
+          BACKFILL_WINDOW_DAYS: "5"
           MAX_RUNTIME_MIN: "18"
         run: |
           set -euo pipefail
