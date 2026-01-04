@@ -1,6 +1,4 @@
-import os
-import time
-import sys
+import os, time, sys
 import requests
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
@@ -32,9 +30,11 @@ TOKEN = os.getenv("SHOPIFY_ADMIN_TOKEN")
 VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-01")
 DB_URL = os.getenv("POSTGRES_URL")
 
-# limite “amigável” para não estourar timeout do Actions
 MAX_RUNTIME_MIN = int(os.getenv("MAX_RUNTIME_MIN", "0"))  # 0 = sem limite
 START_TIME = time.time()
+
+BACKFILL_MODE = os.getenv("BACKFILL_MODE", "0") == "1"
+BACKFILL_WINDOW_DAYS = int(os.getenv("BACKFILL_WINDOW_DAYS", "3"))
 
 if not all([SHOP, TOKEN, DB_URL]):
     raise SystemExit("Faltou SHOPIFY_SHOP / SHOPIFY_ADMIN_TOKEN / POSTGRES_URL no .env")
@@ -73,6 +73,35 @@ set checkpoint = excluded.checkpoint,
     updated_at = now();
 """)
 
+def iso_z(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+def parse_iso(dt_str: str) -> datetime:
+    return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+
+def gql(variables):
+    r = requests.post(URL, headers=HEADERS, json={"query": QUERY, "variables": variables}, timeout=60)
+    r.raise_for_status()
+    j = r.json()
+    if "errors" in j:
+        raise RuntimeError(j["errors"])
+    return j["data"]
+
+def money(set_obj):
+    try:
+        return float(set_obj["shopMoney"]["amount"])
+    except Exception:
+        return None
+
+def should_stop_soon():
+    if MAX_RUNTIME_MIN <= 0:
+        return False
+    elapsed_min = (time.time() - START_TIME) / 60.0
+    return elapsed_min >= MAX_RUNTIME_MIN
+
 # =========================
 # SHOPIFY QUERY
 # =========================
@@ -107,35 +136,6 @@ query Orders($first: Int!, $after: String, $query: String) {
   }
 }
 """
-
-def gql(variables):
-    r = requests.post(URL, headers=HEADERS, json={"query": QUERY, "variables": variables}, timeout=60)
-    r.raise_for_status()
-    j = r.json()
-    if "errors" in j:
-        raise RuntimeError(j["errors"])
-    return j["data"]
-
-def money(set_obj):
-    try:
-        return float(set_obj["shopMoney"]["amount"])
-    except Exception:
-        return None
-
-def parse_iso(iso_str: str) -> datetime:
-    return datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-
-def iso_z(dt: datetime) -> str:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    dt = dt.astimezone(timezone.utc)
-    return dt.isoformat().replace("+00:00", "Z")
-
-def should_stop_soon():
-    if MAX_RUNTIME_MIN <= 0:
-        return False
-    elapsed_min = (time.time() - START_TIME) / 60.0
-    return elapsed_min >= MAX_RUNTIME_MIN
 
 # =========================
 # UPSERTS
@@ -178,62 +178,84 @@ on conflict (line_item_id) do update set
   updated_db_at = now();
 """)
 
+def build_query_filter(checkpoint_dt: datetime):
+    """
+    Incremental:
+      updated_at >= (checkpoint - safety)
+    Backfill:
+      updated_at >= (checkpoint - safety) AND updated_at < (checkpoint + window)
+    """
+    safe_start = checkpoint_dt - SAFETY_WINDOW
+    default_start_dt = parse_iso(DEFAULT_START)
+    if safe_start < default_start_dt:
+        safe_start = default_start_dt
+
+    start_str = iso_z(safe_start)
+
+    if not BACKFILL_MODE:
+        return f"updated_at:>={start_str}", None, safe_start
+
+    window_end = checkpoint_dt + timedelta(days=BACKFILL_WINDOW_DAYS)
+    end_str = iso_z(window_end)
+    # Shopify search query aceita múltiplos filtros separados por espaço
+    return f"updated_at:>={start_str} updated_at:<{end_str}", window_end, safe_start
+
+def ensure_state_and_get_checkpoint(conn) -> datetime:
+    conn.execute(STATE_TABLE_DDL)
+    row = conn.execute(GET_STATE, {"pipeline": PIPELINE_NAME}).fetchone()
+    if not row:
+        checkpoint_dt = parse_iso(DEFAULT_START)
+        conn.execute(UPSERT_STATE, {"pipeline": PIPELINE_NAME, "checkpoint": checkpoint_dt})
+        return checkpoint_dt
+    return row[0]
+
+def update_checkpoint(conn, new_checkpoint_dt: datetime):
+    conn.execute(UPSERT_STATE, {"pipeline": PIPELINE_NAME, "checkpoint": new_checkpoint_dt})
+
 def main():
     orders_count = 0
     items_count = 0
 
-    # 1) garante tabela e pega checkpoint
     with engine.begin() as conn:
-        conn.execute(STATE_TABLE_DDL)
+        checkpoint_dt = ensure_state_and_get_checkpoint(conn)
 
-        row = conn.execute(GET_STATE, {"pipeline": PIPELINE_NAME}).fetchone()
-        if not row:
-            checkpoint_dt = parse_iso(DEFAULT_START)
-            conn.execute(UPSERT_STATE, {"pipeline": PIPELINE_NAME, "checkpoint": checkpoint_dt})
-        else:
-            checkpoint_dt = row[0]
+    query_filter, window_end_dt, safe_start_dt = build_query_filter(checkpoint_dt)
 
-    # 2) aplica janela de segurança (2h pra trás)
-    safe_start_dt = checkpoint_dt - SAFETY_WINDOW
-
-    # não deixa ir “antes” do DEFAULT_START
-    min_dt = parse_iso(DEFAULT_START)
-    if safe_start_dt < min_dt:
-        safe_start_dt = min_dt
-
-    safe_start = iso_z(safe_start_dt)
-
-    # ✅ CORREÇÃO PRINCIPAL: garantir que o Shopify retorne TODOS os status
-    # senão ele pode trazer um subconjunto (e dá exatamente esse sintoma de “poucos pedidos”)
-    query_filter = f"status:any updated_at:>={safe_start}"
+    mode_str = "BACKFILL" if BACKFILL_MODE else "INCREMENTAL"
+    if BACKFILL_MODE:
+        print(f"MODE={mode_str} checkpoint={iso_z(checkpoint_dt)} window_days={BACKFILL_WINDOW_DAYS} safety_start={iso_z(safe_start_dt)} end={iso_z(window_end_dt)}")
+    else:
+        print(f"MODE={mode_str} checkpoint={iso_z(checkpoint_dt)} safety_start={iso_z(safe_start_dt)}")
 
     after = None
-    max_seen_updated = safe_start  # string ISO Z
-    page_count = 0
+    max_seen_updated_dt = checkpoint_dt  # vamos avançar com base no que vimos de fato
+    stop_reason = None
 
-    while True:
-        if should_stop_soon():
-            # salva checkpoint parcial pra continuar depois
-            with engine.begin() as conn:
-                conn.execute(UPSERT_STATE, {"pipeline": PIPELINE_NAME, "checkpoint": parse_iso(max_seen_updated)})
-            print(f"PARTIAL: reached MAX_RUNTIME_MIN={MAX_RUNTIME_MIN}. checkpoint={max_seen_updated} "
-                  f"upsert {orders_count} orders, {items_count} items.")
-            return
+    with engine.begin() as conn:
+        while True:
+            if should_stop_soon():
+                stop_reason = "max_runtime"
+                break
 
-        data = gql({"first": 100, "after": after, "query": query_filter})
-        edges = data["orders"]["edges"]
+            data = gql({"first": 100, "after": after, "query": query_filter})
+            edges = data["orders"]["edges"]
 
-        if not edges:
-            break
+            # nada nessa página
+            if not edges:
+                page = data["orders"]["pageInfo"]
+                if not page["hasNextPage"]:
+                    break
+                after = page["endCursor"]
+                time.sleep(0.35)
+                continue
 
-        # 3) escreve essa página em transação curta (mais seguro pro Actions e pro DB)
-        with engine.begin() as conn:
             for e in edges:
                 o = e["node"]
                 cust = o.get("customer") or {}
 
-                if o["updatedAt"] > max_seen_updated:
-                    max_seen_updated = o["updatedAt"]
+                o_updated_dt = parse_iso(o["updatedAt"])
+                if o_updated_dt > max_seen_updated_dt:
+                    max_seen_updated_dt = o_updated_dt
 
                 conn.execute(UPSERT_ORDER, {
                     "order_id": o["id"],
@@ -243,7 +265,7 @@ def main():
                     "financial_status": o.get("displayFinancialStatus"),
                     "fulfillment_status": o.get("displayFulfillmentStatus"),
                     "currency": o.get("currencyCode"),
-                    "total_price": money((o.get("totalPriceSet") or {}).get("shopMoney") or {}),
+                    "total_price": money(o.get("totalPriceSet") or {}),
                     "customer_id": cust.get("id"),
                     "customer_email": cust.get("email"),
                 })
@@ -251,9 +273,6 @@ def main():
 
                 for li in ((o.get("lineItems") or {}).get("edges") or []):
                     n = li["node"]
-                    unit_set = n.get("originalUnitPriceSet") or {}
-                    shop_money = unit_set.get("shopMoney") or {}
-
                     conn.execute(UPSERT_ITEM, {
                         "line_item_id": n["id"],
                         "order_id": o["id"],
@@ -261,25 +280,28 @@ def main():
                         "sku": n.get("sku"),
                         "name": n.get("name"),
                         "quantity": n.get("quantity"),
-                        "unit_price": float(shop_money["amount"]) if "amount" in shop_money else None,
-                        "currency": shop_money.get("currencyCode"),
+                        "unit_price": money(n.get("originalUnitPriceSet") or {}),
+                        "currency": (n.get("originalUnitPriceSet") or {}).get("shopMoney", {}).get("currencyCode"),
                     })
                     items_count += 1
 
-        page = data["orders"]["pageInfo"]
-        page_count += 1
+            page = data["orders"]["pageInfo"]
+            if not page["hasNextPage"]:
+                break
 
-        if not page["hasNextPage"]:
-            break
+            after = page["endCursor"]
+            time.sleep(0.35)
 
-        after = page["endCursor"]
-        time.sleep(0.35)
+        # ✅ checkpoint: avançar pelo que realmente foi visto
+        # se não viu nada, NÃO avance (isso evita “pular” histórico por acidente)
+        if max_seen_updated_dt > checkpoint_dt:
+            update_checkpoint(conn, max_seen_updated_dt)
 
-    # 4) salva checkpoint final (o max updatedAt visto)
-    with engine.begin() as conn:
-        conn.execute(UPSERT_STATE, {"pipeline": PIPELINE_NAME, "checkpoint": parse_iso(max_seen_updated)})
+    if stop_reason == "max_runtime":
+        print(f"PARTIAL: upsert {orders_count} orders, {items_count} items. checkpoint={iso_z(max_seen_updated_dt)} (MAX_RUNTIME_MIN={MAX_RUNTIME_MIN})")
+        return
 
-    print(f"OK: upsert {orders_count} orders, {items_count} items. pages={page_count} checkpoint={max_seen_updated}")
+    print(f"OK: upsert {orders_count} orders, {items_count} items. checkpoint={iso_z(max_seen_updated_dt)}")
 
 if __name__ == "__main__":
     try:
