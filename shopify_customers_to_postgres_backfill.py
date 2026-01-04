@@ -83,46 +83,57 @@ def should_stop_soon() -> bool:
 # =========================
 QUERY = """
 query Customers($first: Int!, $after: String, $query: String) {
-  customers(first: $first, after: $after, query: $query, sortKey: UPDATED_AT, reverse: false) {
-    pageInfo { hasNextPage endCursor }
+  customers(first: $first, after: $after, query: $query, sortKey: UPDATED_AT) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
     edges {
       node {
         id
         email
+        phone
         firstName
         lastName
-        phone
+        displayName
+        state
+        verifiedEmail
         createdAt
         updatedAt
 
-        # marketing (use só o que existe)
         emailMarketingConsent {
-          marketingState
-          consentUpdatedAt
-        }
-        smsMarketingConsent {
-          marketingState
+          state
           consentUpdatedAt
         }
 
-        # endereços: LISTA (não edges/nodes)
-        addresses {
-          id
-          address1
-          address2
-          city
-          province
-          country
-          zip
-          phone
-          company
-          name
-          firstName
-          lastName
+        smsMarketingConsent {
+          state
+          consentUpdatedAt
         }
 
         defaultAddress {
           id
+        }
+
+        addresses(first: 10) {
+          edges {
+            node {
+              id
+              address1
+              address2
+              city
+              province
+              country
+              zip
+              phone
+              company
+              name
+              firstName
+              lastName
+              latitude
+              longitude
+            }
+          }
         }
       }
     }
