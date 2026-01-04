@@ -306,8 +306,13 @@ def main():
 
                     default_address_id = c["defaultAddress"]["id"] if c.get("defaultAddress") else None
 
-                    email_marketing_consent = c.get("emailMarketingConsent")
-                    sms_marketing_consent = c.get("smsMarketingConsent")
+                    email_marketing_consent = (
+                        c.get("emailMarketingConsent", {}) or {}
+                    ).get("state")
+                    
+                    sms_marketing_consent = (
+                        c.get("smsMarketingConsent", {}) or {}
+                    ).get("state")
 
                     conn.execute(UPSERT_CUSTOMER, {
                         "customer_id": customer_id,
