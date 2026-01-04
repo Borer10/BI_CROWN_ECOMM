@@ -99,55 +99,51 @@ def to_bool_accepts_marketing(email_marketing_consent: str | None):
 # =========================
 QUERY = """
 query Customers($first: Int!, $after: String, $query: String) {
-  customers(first: $first, after: $after, query: $query, sortKey: UPDATED_AT, reverse: false) {
-    pageInfo { hasNextPage endCursor }
-    edges {
-      node {
-  id
-  email
-  phone
-  firstName
-  lastName
-  displayName
-  state
-  verifiedEmail
-
-  emailMarketingConsent {
-    state
-  }
-
-  smsMarketingConsent {
-    state
-  }
-
-  createdAt
-  updatedAt
-  defaultAddress { id }
-
-  addressesV2(first: 250) {
+  customers(first: $first, after: $after, query: $query) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
     edges {
       node {
         id
+        email
+        phone
         firstName
         lastName
-        company
-        phone
-        address1
-        address2
-        city
-        province
-        provinceCode
-        zip
-        country
-        countryCodeV2
-        latitude
-        longitude
+        displayName
+        state
+        verifiedEmail
+        acceptsMarketing
+        createdAt
+        updatedAt
+
+        defaultAddress {
+          id
+        }
+
+        addresses(first: 10) {
+          edges {
+            node {
+              id
+              address1
+              address2
+              city
+              province
+              country
+              zip
+              phone
+              company
+              firstName
+              lastName
+            }
+          }
+        }
       }
     }
   }
 }
 """
-
 # =========================
 # UPSERTS
 # =========================
