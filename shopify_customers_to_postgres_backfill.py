@@ -103,41 +103,45 @@ query Customers($first: Int!, $after: String, $query: String) {
     pageInfo { hasNextPage endCursor }
     edges {
       node {
+  id
+  email
+  phone
+  firstName
+  lastName
+  displayName
+  state
+  verifiedEmail
+
+  emailMarketingConsent {
+    state
+  }
+
+  smsMarketingConsent {
+    state
+  }
+
+  createdAt
+  updatedAt
+  defaultAddress { id }
+
+  addressesV2(first: 250) {
+    edges {
+      node {
         id
-        email
-        phone
         firstName
         lastName
-        displayName
-        state
-        verifiedEmail
-        emailMarketingConsent
-        smsMarketingConsent
-        createdAt
-        updatedAt
-        defaultAddress { id }
-
-        addressesV2(first: 250) {
-          edges {
-            node {
-              id
-              firstName
-              lastName
-              company
-              phone
-              address1
-              address2
-              city
-              province
-              provinceCode
-              zip
-              country
-              countryCodeV2
-              latitude
-              longitude
-            }
-          }
-        }
+        company
+        phone
+        address1
+        address2
+        city
+        province
+        provinceCode
+        zip
+        country
+        countryCodeV2
+        latitude
+        longitude
       }
     }
   }
