@@ -81,13 +81,10 @@ def should_stop_soon() -> bool:
 # =========================
 # SHOPIFY GRAPHQL (FIX: remove optInLevel, use nodes)
 # =========================
-QUERY =
+QUERY = """
 query Customers($first: Int!, $after: String, $query: String) {
-  customers(first: $first, after: $after, query: $query, sortKey: UPDATED_AT) {
-    pageInfo {
-      hasNextPage
-      endCursor
-    }
+  customers(first: $first, after: $after, query: $query, sortKey: UPDATED_AT, reverse: false) {
+    pageInfo { hasNextPage endCursor }
     edges {
       node {
         id
@@ -97,33 +94,18 @@ query Customers($first: Int!, $after: String, $query: String) {
         phone
         createdAt
         updatedAt
-        state
-        verifiedEmail
-        numberOfOrders
-        tags
 
+        # marketing (use só o que existe)
         emailMarketingConsent {
           marketingState
-          marketingOptInLevel
           consentUpdatedAt
         }
-
         smsMarketingConsent {
           marketingState
-          marketingOptInLevel
           consentUpdatedAt
         }
 
-        defaultAddress {
-          id
-          address1
-          address2
-          city
-          province
-          country
-          zip
-        }
-
+        # endereços: LISTA (não edges/nodes)
         addresses {
           id
           address1
@@ -132,11 +114,21 @@ query Customers($first: Int!, $after: String, $query: String) {
           province
           country
           zip
+          phone
+          company
+          name
+          firstName
+          lastName
+        }
+
+        defaultAddress {
+          id
         }
       }
     }
   }
 }
+"""
 
 
 def gql(variables):
