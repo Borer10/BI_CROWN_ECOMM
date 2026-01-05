@@ -98,8 +98,8 @@ def to_bool_accepts_marketing(email_marketing_consent: str | None):
 # - para paginação de endereços use addressesV2 (connection)
 # =========================
 QUERY = """
-query Customers($first: Int!, $after: String, $query: String) {
-  customers(first: $first, after: $after, query: $query) {
+query Customers($first: Int!, $after: String) {
+  customers(first: $first, after: $after) {
     pageInfo {
       hasNextPage
       endCursor
@@ -107,37 +107,29 @@ query Customers($first: Int!, $after: String, $query: String) {
     edges {
       node {
         id
+        legacyResourceId
         email
-        phone
         firstName
         lastName
         displayName
-        state
+        phone
         verifiedEmail
-        acceptsMarketing
+        state
+        tags
         createdAt
         updatedAt
 
         defaultAddress {
           id
-        }
-
-        addresses(first: 10) {
-          edges {
-            node {
-              id
-              address1
-              address2
-              city
-              province
-              country
-              zip
-              phone
-              company
-              firstName
-              lastName
-            }
-          }
+          firstName
+          lastName
+          address1
+          address2
+          city
+          province
+          country
+          zip
+          phone
         }
       }
     }
