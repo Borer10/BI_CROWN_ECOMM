@@ -1,8 +1,8 @@
 name: Shopify ETL Incremental
 
 on:
-  # schedule:
-  #   - cron: "*/30 * * * *"
+  schedule:
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -27,21 +27,34 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run ETL
+      - name: Run Orders + Customers ETL
         env:
           SHOPIFY_SHOP: ${{ secrets.SHOPIFY_SHOP }}
           SHOPIFY_ADMIN_TOKEN: ${{ secrets.SHOPIFY_ADMIN_TOKEN }}
           POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
           SHOPIFY_API_VERSION: "2025-01"
-          MAX_RUNTIME_MIN: "110"
+          # tempo total do job é 20 min; vamos dividir via MAX_RUNTIME por script
+          ORDERS_MAX_RUNTIME_MIN: "11"
+          CUSTOMERS_MAX_RUNTIME_MIN: "8"
+          # safety window (padrão bom)
+          SAFETY_WINDOW_MIN: "120"
         run: |
           set -euo pipefail
           start_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          python shopify_to_postgres_incremental.py 2>&1 | tee etl.log
+          echo "== Rodando ORDERS incremental =="
+          MAX_RUNTIME_MIN="${ORDERS_MAX_RUNTIME_MIN}" \
+            python shopify_to_postgres_incremental.py 2>&1 | tee orders.log
+
+          echo "== Rodando CUSTOMERS incremental =="
+          MAX_RUNTIME_MIN="${CUSTOMERS_MAX_RUNTIME_MIN}" \
+            SAFETY_WINDOW_MIN="${SAFETY_WINDOW_MIN}" \
+            python shopify_customers_to_postgres_incremental.py 2>&1 | tee customers.log
 
           end_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          last_ok=$(grep -E "OK: upsert|PARTIAL:" etl.log | tail -n 1 || true)
+
+          last_ok_orders=$(grep -E "OK: upsert|PARTIAL:" orders.log | tail -n 1 || true)
+          last_ok_customers=$(grep -E "OK: upsert|PARTIAL:" customers.log | tail -n 1 || true)
 
           {
             echo "## Shopify ETL - Resumo"
@@ -49,13 +62,30 @@ jobs:
             echo "- Início (UTC): \`$start_ts\`"
             echo "- Fim (UTC): \`$end_ts\`"
             echo ""
-            echo "### Último status"
-            if [ -n "$last_ok" ]; then
-              echo "\`$last_ok\`"
+            echo "### ORDERS (incremental)"
+            if [ -n "$last_ok_orders" ]; then
+              echo "\`$last_ok_orders\`"
             else
-              echo "_Não encontrei linha OK/PARTIAL no log (ver logs completos)._"
+              echo "_Não encontrei linha OK/PARTIAL no log de orders (ver orders.log)._"
+            fi
+            echo ""
+            echo "### CUSTOMERS (incremental)"
+            if [ -n "$last_ok_customers" ]; then
+              echo "\`$last_ok_customers\`"
+            else
+              echo "_Não encontrei linha OK/PARTIAL no log de customers (ver customers.log)._"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload logs (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etl-logs
+          path: |
+            orders.log
+            customers.log
+          if-no-files-found: ignore
 
       - name: Send email on failure
         if: failure()
