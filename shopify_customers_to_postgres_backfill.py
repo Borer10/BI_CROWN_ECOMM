@@ -41,13 +41,13 @@ query Customers($first: Int!, $after: String, $query: String) {
       node {
         id
         email
-        phone
         firstName
         lastName
         displayName
+        phone
         state
         verifiedEmail
-        acceptsMarketing
+        dataSaleOptOut
         createdAt
         updatedAt
         defaultAddress { id }
@@ -291,7 +291,9 @@ def main():
                             "display_name": c.get("displayName"),
                             "state": c.get("state"),
                             "verified_email": bool(c.get("verifiedEmail")) if c.get("verifiedEmail") is not None else None,
-                            "accepts_marketing": bool(c.get("acceptsMarketing")) if c.get("acceptsMarketing") is not None else None,
+                            accepts_marketing = (
+                                False if customer.get("dataSaleOptOut") is True else True
+                            ),
                             "created_at": iso_to_dt(c.get("createdAt")),
                             "updated_at": iso_to_dt(c.get("updatedAt")),
                             "default_address_id": default_address_id,
