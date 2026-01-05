@@ -1,196 +1,95 @@
-import os, time, sys
-import requests
-from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+#!/usr/bin/env python3
+import os
+import sys
+import json
+import time
+import re
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 
-load_dotenv()
+import requests
+import psycopg2
+
 
 # =========================
-# LOCK FILE (anti concorrência)
+# Config
 # =========================
-LOCK_FILE = Path("shopify_customers_backfill.lock")
-
-if LOCK_FILE.exists():
-    print("⛔ Customers backfill já está rodando. Saindo para evitar execução dupla.")
-    sys.exit(0)
-
-try:
-    LOCK_FILE.touch()
-except Exception as e:
-    print(f"Erro ao criar lock file: {e}")
-    sys.exit(1)
-
-SHOP = os.getenv("SHOPIFY_SHOP")
+SHOP = os.getenv("SHOPIFY_SHOP")  # ex: "canetas-crown-n1.myshopify.com"
 TOKEN = os.getenv("SHOPIFY_ADMIN_TOKEN")
-VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-01")
-DB_URL = os.getenv("POSTGRES_URL")
+API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-01")
 
-# limite “amigável” para não estourar timeout do Actions
-MAX_RUNTIME_MIN = int(os.getenv("MAX_RUNTIME_MIN", "18"))  # sugiro 18 num job de 20 min
-START_TIME = time.time()
+POSTGRES_URL = os.getenv("POSTGRES_URL")
 
-if not all([SHOP, TOKEN, DB_URL]):
-    raise SystemExit("Faltou SHOPIFY_SHOP / SHOPIFY_ADMIN_TOKEN / POSTGRES_URL no .env")
+PIPELINE_NAME = os.getenv("PIPELINE_NAME", "shopify_customers")
+MAX_RUNTIME_MIN = int(os.getenv("MAX_RUNTIME_MIN", "18"))
+PAGE_SIZE = int(os.getenv("PAGE_SIZE", "100"))
 
-URL = f"https://{SHOP}/admin/api/{VERSION}/graphql.json"
-HEADERS = {"X-Shopify-Access-Token": TOKEN, "Content-Type": "application/json"}
+# Se você quiser forçar um "start" manual (ex: backfill do histórico inteiro), pode setar:
+# EFFECTIVE_START_ISO="2024-01-01T00:00:00Z"
+EFFECTIVE_START_ISO = os.getenv("EFFECTIVE_START_ISO", "").strip()
 
-# =========================
-# STATE NO POSTGRES (Supabase)
-# =========================
-PIPELINE_NAME = "shopify_customers"
-DEFAULT_START = "2025-01-01T00:00:00Z"
-SAFETY_WINDOW = timedelta(hours=2)
+GRAPHQL_URL = f"https://{SHOP}/admin/api/{API_VERSION}/graphql.json"
 
-engine = create_engine(DB_URL, pool_pre_ping=True)
-
-STATE_TABLE_DDL = text("""
-create table if not exists public.etl_state (
-  pipeline text primary key,
-  checkpoint timestamptz not null,
-  updated_at timestamptz not null default now()
-);
-""")
-
-GET_STATE = text("""
-select checkpoint
-from public.etl_state
-where pipeline = :pipeline;
-""")
-
-UPSERT_STATE = text("""
-insert into public.etl_state (pipeline, checkpoint, updated_at)
-values (:pipeline, :checkpoint, now())
-on conflict (pipeline) do update
-set checkpoint = excluded.checkpoint,
-    updated_at = now();
-""")
-
-def iso_z(dt: datetime) -> str:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    dt = dt.astimezone(timezone.utc)
-    return dt.isoformat().replace("+00:00", "Z")
-
-def should_stop_soon():
-    elapsed_min = (time.time() - START_TIME) / 60.0
-    return elapsed_min >= MAX_RUNTIME_MIN
-
-def gql(variables):
-    r = requests.post(URL, headers=HEADERS, json={"query": QUERY, "variables": variables}, timeout=60)
-    r.raise_for_status()
-    j = r.json()
-    if "errors" in j:
-        raise RuntimeError(j["errors"])
-    return j["data"]
-
-def to_bool_accepts_marketing(email_marketing_consent: str | None):
-    # emailMarketingConsent é ENUM (ex: SUBSCRIBED/UNSUBSCRIBED/NOT_SUBSCRIBED/UNKNOWN etc)
-    if not email_marketing_consent:
-        return None
-    return email_marketing_consent.upper() == "SUBSCRIBED"
 
 # =========================
-# SHOPIFY QUERY (Admin GraphQL 2025-01 compatível)
-# - emailMarketingConsent e smsMarketingConsent são ENUMs (não objetos)
-# - para paginação de endereços use addressesV2 (connection)
+# GraphQL Query (Customer + Addresses)
 # =========================
 QUERY = """
-query Customers($first: Int!, $after: String) {
-  customers(first: $first, after: $after) {
-    pageInfo {
-      hasNextPage
-      endCursor
-    }
+query Customers($first: Int!, $after: String, $query: String) {
+  customers(first: $first, after: $after, query: $query, sortKey: UPDATED_AT) {
+    pageInfo { hasNextPage endCursor }
     edges {
       node {
         id
-        legacyResourceId
         email
+        phone
         firstName
         lastName
         displayName
-        phone
-        verifiedEmail
         state
-        tags
+        verifiedEmail
+        acceptsMarketing
         createdAt
         updatedAt
+        defaultAddress { id }
 
-        defaultAddress {
-          id
-          firstName
-          lastName
-          address1
-          address2
-          city
-          province
-          country
-          zip
-          phone
+        addressesV2(first: 250) {
+          nodes {
+            id
+            firstName
+            lastName
+            company
+            address1
+            address2
+            city
+            province
+            provinceCode
+            country
+            countryCodeV2
+            zip
+            phone
+            latitude
+            longitude
+          }
         }
       }
     }
   }
 }
-"""
-# =========================
-# UPSERTS
-# =========================
-CUSTOMERS_TABLE_DDL = text("""
-create table if not exists public.customers (
-  customer_id text primary key,
-  email text,
-  phone text,
-  first_name text,
-  last_name text,
-  display_name text,
-  state text,
-  verified_email boolean,
-  accepts_marketing boolean,
-  email_marketing_consent text,
-  sms_marketing_consent text,
-  created_at timestamptz,
-  updated_at timestamptz,
-  default_address_id text,
-  updated_db_at timestamptz not null default now()
-);
-""")
+""".strip()
 
-ADDRESSES_TABLE_DDL = text("""
-create table if not exists public.customer_addresses (
-  address_id text primary key,
-  customer_id text not null,
-  is_default boolean,
-  first_name text,
-  last_name text,
-  company text,
-  phone text,
-  address1 text,
-  address2 text,
-  city text,
-  province text,
-  province_code text,
-  zip text,
-  country text,
-  country_code text,
-  latitude double precision,
-  longitude double precision,
-  updated_db_at timestamptz not null default now()
-);
-""")
 
-UPSERT_CUSTOMER = text("""
+# =========================
+# SQL
+# =========================
+SQL_CUSTOMERS_UPSERT = """
 insert into public.customers (
   customer_id, email, phone, first_name, last_name, display_name, state,
-  verified_email, accepts_marketing, email_marketing_consent, sms_marketing_consent,
+  verified_email, accepts_marketing,
   created_at, updated_at, default_address_id, updated_db_at
 ) values (
-  :customer_id, :email, :phone, :first_name, :last_name, :display_name, :state,
-  :verified_email, :accepts_marketing, :email_marketing_consent, :sms_marketing_consent,
-  :created_at, :updated_at, :default_address_id, now()
+  %(customer_id)s, %(email)s, %(phone)s, %(first_name)s, %(last_name)s, %(display_name)s, %(state)s,
+  %(verified_email)s, %(accepts_marketing)s,
+  %(created_at)s, %(updated_at)s, %(default_address_id)s, now()
 )
 on conflict (customer_id) do update set
   email = excluded.email,
@@ -201,28 +100,26 @@ on conflict (customer_id) do update set
   state = excluded.state,
   verified_email = excluded.verified_email,
   accepts_marketing = excluded.accepts_marketing,
-  email_marketing_consent = excluded.email_marketing_consent,
-  sms_marketing_consent = excluded.sms_marketing_consent,
   created_at = excluded.created_at,
   updated_at = excluded.updated_at,
   default_address_id = excluded.default_address_id,
   updated_db_at = now();
-""")
+""".strip()
 
-UPSERT_ADDRESS = text("""
+SQL_ADDRESSES_UPSERT = """
 insert into public.customer_addresses (
   address_id, customer_id, is_default,
-  first_name, last_name, company, phone,
+  first_name, last_name, company,
   address1, address2, city, province, province_code,
-  zip, country, country_code,
+  country, country_code, zip, phone,
   latitude, longitude,
   updated_db_at
 ) values (
-  :address_id, :customer_id, :is_default,
-  :first_name, :last_name, :company, :phone,
-  :address1, :address2, :city, :province, :province_code,
-  :zip, :country, :country_code,
-  :latitude, :longitude,
+  %(address_id)s, %(customer_id)s, %(is_default)s,
+  %(first_name)s, %(last_name)s, %(company)s,
+  %(address1)s, %(address2)s, %(city)s, %(province)s, %(province_code)s,
+  %(country)s, %(country_code)s, %(zip)s, %(phone)s,
+  %(latitude)s, %(longitude)s,
   now()
 )
 on conflict (address_id) do update set
@@ -231,142 +128,227 @@ on conflict (address_id) do update set
   first_name = excluded.first_name,
   last_name = excluded.last_name,
   company = excluded.company,
-  phone = excluded.phone,
   address1 = excluded.address1,
   address2 = excluded.address2,
   city = excluded.city,
   province = excluded.province,
   province_code = excluded.province_code,
-  zip = excluded.zip,
   country = excluded.country,
   country_code = excluded.country_code,
+  zip = excluded.zip,
+  phone = excluded.phone,
   latitude = excluded.latitude,
   longitude = excluded.longitude,
   updated_db_at = now();
-""")
+""".strip()
 
+SQL_GET_CHECKPOINT = """
+select checkpoint
+from public.etl_state
+where pipeline = %(pipeline)s
+limit 1;
+""".strip()
+
+SQL_UPSERT_CHECKPOINT = """
+insert into public.etl_state (pipeline, checkpoint, updated_at)
+values (%(pipeline)s, %(checkpoint)s, now())
+on conflict (pipeline) do update set
+  checkpoint = excluded.checkpoint,
+  updated_at = now();
+""".strip()
+
+
+# =========================
+# Helpers
+# =========================
+def iso_to_dt(s: str):
+    if not s:
+        return None
+    # Shopify returns ISO with Z
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+def gql(variables: dict):
+    headers = {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": TOKEN,
+    }
+    payload = {"query": QUERY, "variables": variables}
+    r = requests.post(GRAPHQL_URL, headers=headers, json=payload, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+    if "errors" in data and data["errors"]:
+        raise RuntimeError(data["errors"])
+    return data
+
+def require_env():
+    missing = []
+    if not SHOP:
+        missing.append("SHOPIFY_SHOP")
+    if not TOKEN:
+        missing.append("SHOPIFY_ADMIN_TOKEN")
+    if not POSTGRES_URL:
+        missing.append("POSTGRES_URL")
+    if missing:
+        raise SystemExit(f"Missing env vars: {', '.join(missing)}")
+
+def connect_db():
+    return psycopg2.connect(POSTGRES_URL)
+
+def get_checkpoint(cur):
+    cur.execute(SQL_GET_CHECKPOINT, {"pipeline": PIPELINE_NAME})
+    row = cur.fetchone()
+    return row[0] if row else None
+
+def set_checkpoint(cur, checkpoint_dt):
+    # store as timestamptz
+    cur.execute(SQL_UPSERT_CHECKPOINT, {"pipeline": PIPELINE_NAME, "checkpoint": checkpoint_dt})
+
+def build_query_filter(effective_start_dt: datetime):
+    # Shopify filter expects "updated_at:>=YYYY-MM-DDTHH:MM:SSZ"
+    z = effective_start_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"updated_at:>={z}"
+
+def normalize_country_code(v):
+    if v is None:
+        return None
+    # enum -> string
+    return str(v)
+
+def normalize_float(v):
+    try:
+        return float(v) if v is not None else None
+    except Exception:
+        return None
+
+
+# =========================
+# Main
+# =========================
 def main():
-    customers_count = 0
-    addresses_count = 0
-    after = None
+    require_env()
 
-    max_seen_updated_at = None
+    start_ts = time.time()
+    deadline_ts = start_ts + (MAX_RUNTIME_MIN * 60)
 
-    with engine.connect() as conn:
-        # garantir tabelas e checkpoint
-        with conn.begin():
-            conn.execute(STATE_TABLE_DDL)
-            conn.execute(CUSTOMERS_TABLE_DDL)
-            conn.execute(ADDRESSES_TABLE_DDL)
+    with connect_db() as conn:
+        conn.autocommit = False
+        with conn.cursor() as cur:
+            checkpoint = get_checkpoint(cur)
 
-            row = conn.execute(GET_STATE, {"pipeline": PIPELINE_NAME}).fetchone()
-            if not row:
-                checkpoint_dt = datetime.fromisoformat(DEFAULT_START.replace("Z", "+00:00"))
-                conn.execute(UPSERT_STATE, {"pipeline": PIPELINE_NAME, "checkpoint": checkpoint_dt})
+            # checkpoint in DB might come as datetime already (timestamptz)
+            if isinstance(checkpoint, str):
+                checkpoint_dt = iso_to_dt(checkpoint)
             else:
-                checkpoint_dt = row[0]
+                checkpoint_dt = checkpoint
 
-        effective_start = checkpoint_dt - SAFETY_WINDOW
-        query_filter = f"updated_at:>={iso_z(effective_start)}"
-        print(f"▶️ Pipeline={PIPELINE_NAME} checkpoint={checkpoint_dt} effective_start={effective_start} query='{query_filter}'")
+            if EFFECTIVE_START_ISO:
+                effective_start_dt = iso_to_dt(EFFECTIVE_START_ISO)
+            else:
+                # If no EFFECTIVE_START_ISO, use checkpoint; if none, start from "now - 3650d" (bem antigo)
+                effective_start_dt = checkpoint_dt or (datetime.now(timezone.utc) - timedelta(days=3650))
 
-        while True:
-            if should_stop_soon():
-                print("⏱️ Cheguei perto do limite de runtime. Salvando checkpoint e saindo...")
-                break
+            query_filter = build_query_filter(effective_start_dt)
 
-            data = gql({"first": 100, "after": after, "query": query_filter})
-            payload = data["customers"]
-            edges = payload["edges"]
+            print(
+                f"Pipeline={PIPELINE_NAME} checkpoint={checkpoint_dt} "
+                f"effective_start={effective_start_dt} query='{query_filter}'"
+            )
 
-            if not edges:
-                print("✅ Sem mais customers nesse range.")
-                break
+            after = None
+            total_customers = 0
+            total_addresses = 0
 
-            with conn.begin():
-                for e in edges:
-                    c = e["node"]
-                    customer_id = c["id"]
-                    updated_at = datetime.fromisoformat(c["updatedAt"].replace("Z", "+00:00"))
+            while True:
+                if time.time() > deadline_ts:
+                    print("PARTIAL: atingiu limite de tempo. Salvando checkpoint e saindo.")
+                    conn.commit()
+                    break
 
-                    if (max_seen_updated_at is None) or (updated_at > max_seen_updated_at):
-                        max_seen_updated_at = updated_at
+                data = gql({"first": PAGE_SIZE, "after": after, "query": query_filter})
+                customers = data["data"]["customers"]["edges"]
+                page_info = data["data"]["customers"]["pageInfo"]
 
-                    default_address_id = c["defaultAddress"]["id"] if c.get("defaultAddress") else None
+                if not customers:
+                    print("OK: nenhum customer retornado para este filtro (fim).")
+                    break
 
-                    email_marketing_consent = (
-                        c.get("emailMarketingConsent", {}) or {}
-                    ).get("state")
-                    
-                    sms_marketing_consent = (
-                        c.get("smsMarketingConsent", {}) or {}
-                    ).get("state")
+                for edge in customers:
+                    c = edge["node"]
 
-                    conn.execute(UPSERT_CUSTOMER, {
-                        "customer_id": customer_id,
-                        "email": c.get("email"),
-                        "phone": c.get("phone"),
-                        "first_name": c.get("firstName"),
-                        "last_name": c.get("lastName"),
-                        "display_name": c.get("displayName"),
-                        "state": c.get("state"),
-                        "verified_email": c.get("verifiedEmail"),
-                        "accepts_marketing": to_bool_accepts_marketing(email_marketing_consent),
-                        "email_marketing_consent": email_marketing_consent,
-                        "sms_marketing_consent": sms_marketing_consent,
-                        "created_at": datetime.fromisoformat(c["createdAt"].replace("Z", "+00:00")) if c.get("createdAt") else None,
-                        "updated_at": updated_at,
-                        "default_address_id": default_address_id
-                    })
-                    customers_count += 1
+                    customer_id = c.get("id")
+                    default_addr = c.get("defaultAddress") or {}
+                    default_address_id = default_addr.get("id")
 
-                    # endereços (connection)
-                    addr_edges = (((c.get("addressesV2") or {}).get("edges")) or [])
-                    for ae in addr_edges:
-                        a = ae["node"]
-                        address_id = a["id"]
-                        conn.execute(UPSERT_ADDRESS, {
-                            "address_id": address_id,
+                    # upsert customer
+                    cur.execute(
+                        SQL_CUSTOMERS_UPSERT,
+                        {
                             "customer_id": customer_id,
-                            "is_default": (default_address_id == address_id),
-                            "first_name": a.get("firstName"),
-                            "last_name": a.get("lastName"),
-                            "company": a.get("company"),
-                            "phone": a.get("phone"),
-                            "address1": a.get("address1"),
-                            "address2": a.get("address2"),
-                            "city": a.get("city"),
-                            "province": a.get("province"),
-                            "province_code": a.get("provinceCode"),
-                            "zip": a.get("zip"),
-                            "country": a.get("country"),
-                            "country_code": a.get("countryCodeV2"),
-                            "latitude": a.get("latitude"),
-                            "longitude": a.get("longitude"),
-                        })
-                        addresses_count += 1
+                            "email": c.get("email"),
+                            "phone": c.get("phone"),
+                            "first_name": c.get("firstName"),
+                            "last_name": c.get("lastName"),
+                            "display_name": c.get("displayName"),
+                            "state": c.get("state"),
+                            "verified_email": bool(c.get("verifiedEmail")) if c.get("verifiedEmail") is not None else None,
+                            "accepts_marketing": bool(c.get("acceptsMarketing")) if c.get("acceptsMarketing") is not None else None,
+                            "created_at": iso_to_dt(c.get("createdAt")),
+                            "updated_at": iso_to_dt(c.get("updatedAt")),
+                            "default_address_id": default_address_id,
+                        },
+                    )
+                    total_customers += 1
 
-            page_info = payload["pageInfo"]
-            if not page_info["hasNextPage"]:
-                break
-            after = page_info["endCursor"]
+                    # upsert addresses
+                    addr_nodes = ((c.get("addressesV2") or {}).get("nodes")) or []
+                    for a in addr_nodes:
+                        address_id = a.get("id")
+                        is_default = (default_address_id is not None and address_id == default_address_id)
 
-        # atualizar checkpoint
-        if max_seen_updated_at is not None:
-            with conn.begin():
-                conn.execute(UPSERT_STATE, {"pipeline": PIPELINE_NAME, "checkpoint": max_seen_updated_at})
-            print(f"✅ Checkpoint atualizado para {max_seen_updated_at}")
-        else:
-            print("ℹ️ Nenhum customer processado nessa execução; checkpoint mantido.")
+                        cur.execute(
+                            SQL_ADDRESSES_UPSERT,
+                            {
+                                "address_id": address_id,
+                                "customer_id": customer_id,
+                                "is_default": is_default,
+                                "first_name": a.get("firstName"),
+                                "last_name": a.get("lastName"),
+                                "company": a.get("company"),
+                                "address1": a.get("address1"),
+                                "address2": a.get("address2"),
+                                "city": a.get("city"),
+                                "province": a.get("province"),
+                                "province_code": a.get("provinceCode"),
+                                "country": a.get("country"),
+                                "country_code": normalize_country_code(a.get("countryCodeV2")),
+                                "zip": a.get("zip"),
+                                "phone": a.get("phone"),
+                                "latitude": normalize_float(a.get("latitude")),
+                                "longitude": normalize_float(a.get("longitude")),
+                            },
+                        )
+                        total_addresses += 1
 
-    print(f"✅ DONE customers={customers_count} addresses={addresses_count}")
+                conn.commit()
+
+                # atualiza checkpoint com base no último updatedAt visto nesta página
+                # (mantém o cursor avançando com segurança)
+                last_updated = None
+                for edge in customers:
+                    u = iso_to_dt(edge["node"].get("updatedAt"))
+                    if u and (last_updated is None or u > last_updated):
+                        last_updated = u
+                if last_updated:
+                    set_checkpoint(cur, last_updated)
+                    conn.commit()
+
+                if not page_info["hasNextPage"]:
+                    print("OK: terminou paginação.")
+                    break
+
+                after = page_info["endCursor"]
+
+            print(f"OK: upsert customers={total_customers} addresses={total_addresses}")
 
 if __name__ == "__main__":
-    try:
-        main()
-    finally:
-        # sempre remove o lock
-        try:
-            LOCK_FILE.unlink(missing_ok=True)
-        except Exception:
-            pass
+    main()
