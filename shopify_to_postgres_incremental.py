@@ -102,6 +102,19 @@ def should_stop_soon():
     elapsed_min = (time.time() - START_TIME) / 60.0
     return elapsed_min >= MAX_RUNTIME_MIN
 
+def norm_str(v):
+    # Normaliza strings (evita espaços) e retorna None se vier vazio
+    if v is None:
+        return None
+    v = str(v).strip()
+    return v if v else None
+
+def norm_float(v):
+    try:
+        return float(v) if v is not None else None
+    except Exception:
+        return None
+
 # =========================
 # SHOPIFY QUERY
 # =========================
@@ -120,6 +133,16 @@ query Orders($first: Int!, $after: String, $query: String) {
         currencyCode
         totalPriceSet { shopMoney { amount currencyCode } }
         customer { id email }
+
+        shippingAddress {
+          city
+          province
+          country
+          zip
+          latitude
+          longitude
+        }
+
         lineItems(first: 250) {
           edges {
             node {
@@ -140,13 +163,22 @@ query Orders($first: Int!, $after: String, $query: String) {
 # =========================
 # UPSERTS
 # =========================
+# OBS: Para este código funcionar, a tabela public.orders precisa ter as colunas:
+# shipping_city, shipping_province, shipping_country, shipping_zip,
+# shipping_latitude, shipping_longitude
 UPSERT_ORDER = text("""
 insert into public.orders (
   order_id, order_name, created_at, updated_at, financial_status, fulfillment_status,
-  currency, total_price, customer_id, customer_email, updated_db_at
+  currency, total_price, customer_id, customer_email,
+  shipping_city, shipping_province, shipping_country, shipping_zip,
+  shipping_latitude, shipping_longitude,
+  updated_db_at
 ) values (
   :order_id, :order_name, :created_at, :updated_at, :financial_status, :fulfillment_status,
-  :currency, :total_price, :customer_id, :customer_email, now()
+  :currency, :total_price, :customer_id, :customer_email,
+  :shipping_city, :shipping_province, :shipping_country, :shipping_zip,
+  :shipping_latitude, :shipping_longitude,
+  now()
 )
 on conflict (order_id) do update set
   order_name = excluded.order_name,
@@ -158,6 +190,12 @@ on conflict (order_id) do update set
   total_price = excluded.total_price,
   customer_id = excluded.customer_id,
   customer_email = excluded.customer_email,
+  shipping_city = excluded.shipping_city,
+  shipping_province = excluded.shipping_province,
+  shipping_country = excluded.shipping_country,
+  shipping_zip = excluded.shipping_zip,
+  shipping_latitude = excluded.shipping_latitude,
+  shipping_longitude = excluded.shipping_longitude,
   updated_db_at = now();
 """)
 
@@ -252,6 +290,7 @@ def main():
             for e in edges:
                 o = e["node"]
                 cust = o.get("customer") or {}
+                ship = o.get("shippingAddress") or {}
 
                 o_updated_dt = parse_iso(o["updatedAt"])
                 if o_updated_dt > max_seen_updated_dt:
@@ -268,6 +307,13 @@ def main():
                     "total_price": money(o.get("totalPriceSet") or {}),
                     "customer_id": cust.get("id"),
                     "customer_email": cust.get("email"),
+
+                    "shipping_city": norm_str(ship.get("city")),
+                    "shipping_province": norm_str(ship.get("province")),
+                    "shipping_country": norm_str(ship.get("country")),
+                    "shipping_zip": norm_str(ship.get("zip")),
+                    "shipping_latitude": norm_float(ship.get("latitude")),
+                    "shipping_longitude": norm_float(ship.get("longitude")),
                 })
                 orders_count += 1
 

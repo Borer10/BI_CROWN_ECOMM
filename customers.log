@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/Users/natanborer/Documents/BI_CROWN_ECOMM/shopify_integracao/shopify_customers_to_postgres_incremental.py", line 6, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
