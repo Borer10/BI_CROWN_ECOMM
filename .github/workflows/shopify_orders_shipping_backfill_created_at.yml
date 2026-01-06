@@ -1,0 +1,43 @@
+name: Shopify Orders Shipping Backfill (created_at)
+
+on:
+  workflow_dispatch:
+    inputs:
+      backfill_start_iso:
+        description: "Data inicial (ISO) ex: 2025-12-01T00:00:00Z"
+        required: true
+        default: "2025-12-01T00:00:00Z"
+
+permissions:
+  contents: read
+
+jobs:
+  run-backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Shipping Backfill
+        env:
+          SHOPIFY_SHOP: ${{ secrets.SHOPIFY_SHOP }}
+          SHOPIFY_ADMIN_TOKEN: ${{ secrets.SHOPIFY_ADMIN_TOKEN }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          SHOPIFY_API_VERSION: "2025-01"
+          MAX_RUNTIME_MIN: "18"
+          BACKFILL_START_ISO: ${{ inputs.backfill_start_iso }}
+        run: |
+          set -euo pipefail
+          python shopify_orders_shipping_backfill_created_at.py 2>&1 | tee backfill_shipping.log
