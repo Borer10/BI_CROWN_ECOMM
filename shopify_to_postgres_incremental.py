@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os, time, sys
 import requests
 from dotenv import load_dotenv
@@ -96,24 +97,17 @@ def money(set_obj):
     except Exception:
         return None
 
-def should_stop_soon():
-    if MAX_RUNTIME_MIN <= 0:
-        return False
-    elapsed_min = (time.time() - START_TIME) / 60.0
-    return elapsed_min >= MAX_RUNTIME_MIN
-
-def norm_str(v):
-    # Normaliza strings (evita espaços) e retorna None se vier vazio
-    if v is None:
-        return None
-    v = str(v).strip()
-    return v if v else None
-
 def norm_float(v):
     try:
         return float(v) if v is not None else None
     except Exception:
         return None
+
+def should_stop_soon():
+    if MAX_RUNTIME_MIN <= 0:
+        return False
+    elapsed_min = (time.time() - START_TIME) / 60.0
+    return elapsed_min >= MAX_RUNTIME_MIN
 
 # =========================
 # SHOPIFY QUERY
@@ -132,6 +126,7 @@ query Orders($first: Int!, $after: String, $query: String) {
         displayFulfillmentStatus
         currencyCode
         totalPriceSet { shopMoney { amount currencyCode } }
+
         customer { id email }
 
         shippingAddress {
@@ -163,21 +158,46 @@ query Orders($first: Int!, $after: String, $query: String) {
 # =========================
 # UPSERTS
 # =========================
-# OBS: Para este código funcionar, a tabela public.orders precisa ter as colunas:
-# shipping_city, shipping_province, shipping_country, shipping_zip,
-# shipping_latitude, shipping_longitude
 UPSERT_ORDER = text("""
 insert into public.orders (
-  order_id, order_name, created_at, updated_at, financial_status, fulfillment_status,
-  currency, total_price, customer_id, customer_email,
-  shipping_city, shipping_province, shipping_country, shipping_zip,
-  shipping_latitude, shipping_longitude,
+  order_id,
+  order_name,
+  created_at,
+  updated_at,
+  financial_status,
+  fulfillment_status,
+  currency,
+  total_price,
+  customer_id,
+  customer_email,
+
+  shipping_city,
+  shipping_province,
+  shipping_country,
+  shipping_zip,
+  shipping_latitude,
+  shipping_longitude,
+
   updated_db_at
 ) values (
-  :order_id, :order_name, :created_at, :updated_at, :financial_status, :fulfillment_status,
-  :currency, :total_price, :customer_id, :customer_email,
-  :shipping_city, :shipping_province, :shipping_country, :shipping_zip,
-  :shipping_latitude, :shipping_longitude,
+  :order_id,
+  :order_name,
+  :created_at,
+  :updated_at,
+  :financial_status,
+  :fulfillment_status,
+  :currency,
+  :total_price,
+  :customer_id,
+  :customer_email,
+
+  :shipping_city,
+  :shipping_province,
+  :shipping_country,
+  :shipping_zip,
+  :shipping_latitude,
+  :shipping_longitude,
+
   now()
 )
 on conflict (order_id) do update set
@@ -190,12 +210,14 @@ on conflict (order_id) do update set
   total_price = excluded.total_price,
   customer_id = excluded.customer_id,
   customer_email = excluded.customer_email,
+
   shipping_city = excluded.shipping_city,
   shipping_province = excluded.shipping_province,
   shipping_country = excluded.shipping_country,
   shipping_zip = excluded.shipping_zip,
   shipping_latitude = excluded.shipping_latitude,
   shipping_longitude = excluded.shipping_longitude,
+
   updated_db_at = now();
 """)
 
@@ -235,7 +257,6 @@ def build_query_filter(checkpoint_dt: datetime):
 
     window_end = checkpoint_dt + timedelta(days=BACKFILL_WINDOW_DAYS)
     end_str = iso_z(window_end)
-    # Shopify search query aceita múltiplos filtros separados por espaço
     return f"updated_at:>={start_str} updated_at:<{end_str}", window_end, safe_start
 
 def ensure_state_and_get_checkpoint(conn) -> datetime:
@@ -266,7 +287,7 @@ def main():
         print(f"MODE={mode_str} checkpoint={iso_z(checkpoint_dt)} safety_start={iso_z(safe_start_dt)}")
 
     after = None
-    max_seen_updated_dt = checkpoint_dt  # vamos avançar com base no que vimos de fato
+    max_seen_updated_dt = checkpoint_dt
     stop_reason = None
 
     with engine.begin() as conn:
@@ -278,7 +299,6 @@ def main():
             data = gql({"first": 100, "after": after, "query": query_filter})
             edges = data["orders"]["edges"]
 
-            # nada nessa página
             if not edges:
                 page = data["orders"]["pageInfo"]
                 if not page["hasNextPage"]:
@@ -308,10 +328,10 @@ def main():
                     "customer_id": cust.get("id"),
                     "customer_email": cust.get("email"),
 
-                    "shipping_city": norm_str(ship.get("city")),
-                    "shipping_province": norm_str(ship.get("province")),
-                    "shipping_country": norm_str(ship.get("country")),
-                    "shipping_zip": norm_str(ship.get("zip")),
+                    "shipping_city": ship.get("city"),
+                    "shipping_province": ship.get("province"),
+                    "shipping_country": ship.get("country"),
+                    "shipping_zip": ship.get("zip"),
                     "shipping_latitude": norm_float(ship.get("latitude")),
                     "shipping_longitude": norm_float(ship.get("longitude")),
                 })
@@ -338,8 +358,7 @@ def main():
             after = page["endCursor"]
             time.sleep(0.35)
 
-        # ✅ checkpoint: avançar pelo que realmente foi visto
-        # se não viu nada, NÃO avance (isso evita “pular” histórico por acidente)
+        # checkpoint: avançar pelo que realmente foi visto
         if max_seen_updated_dt > checkpoint_dt:
             update_checkpoint(conn, max_seen_updated_dt)
 
