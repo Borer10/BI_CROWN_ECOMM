@@ -1,0 +1,30 @@
+name: Shopify ETL (Products) - Daily
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  run-products:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Products Incremental (Daily)
+        env:
+          SHOPIFY_SHOP: ${{ secrets.SHOPIFY_SHOP }}
+          SHOPIFY_ADMIN_TOKEN: ${{ secrets.SHOPIFY_ADMIN_TOKEN }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          SHOPIFY_API_VERSION: "2025-01"
+          PIPELINE_NAME: "shopify_products"
+          MAX_RUNTIME_MIN: "30"
+        run: python shopify_products_to_postgres_incremental.py
