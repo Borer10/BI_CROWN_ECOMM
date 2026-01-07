@@ -15,8 +15,7 @@ API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-01")
 POSTGRES_URL = os.getenv("POSTGRES_URL")
 
 PIPELINE_NAME = os.getenv("PIPELINE_NAME", "shopify_products")
-MAX_RUNTIME_MIN = int(os.getenv("MAX_RUNTIME_MIN", "25"))  # diário, pode ser maior se quiser
-
+MAX_RUNTIME_MIN = int(os.getenv("MAX_RUNTIME_MIN", "25"))  # diário
 DEFAULT_START = os.getenv("DEFAULT_START", "2025-01-01T00:00:00Z")
 SAFETY_WINDOW = timedelta(hours=2)
 
@@ -122,30 +121,36 @@ REFRESH_MV = text("refresh materialized view analytics.mv_dim_product_variants;"
 # =========================
 # Shopify GraphQL
 # =========================
+# Importante: incremental por UPDATED_AT do PRODUCT (não do variant)
 QUERY = """
-query ProductVariants($first: Int!, $after: String, $query: String) {
-  productVariants(first: $first, after: $after, query: $query, sortKey: UPDATED_AT, reverse: false) {
+query Products($first: Int!, $after: String, $query: String) {
+  products(first: $first, after: $after, query: $query, sortKey: UPDATED_AT, reverse: false) {
     pageInfo { hasNextPage endCursor }
     edges {
       node {
         id
         title
-        sku
-        barcode
-        price
-        compareAtPrice
-        inventoryQuantity
-        taxable
-        createdAt
+        handle
+        vendor
+        productType
+        status
         updatedAt
-        selectedOptions { name value }
-        product {
-          id
-          title
-          handle
-          vendor
-          productType
-          status
+        createdAt
+
+        variants(first: 250) {
+          nodes {
+            id
+            title
+            sku
+            barcode
+            price
+            compareAtPrice
+            inventoryQuantity
+            taxable
+            createdAt
+            updatedAt
+            selectedOptions { name value }
+          }
         }
       }
     }
@@ -190,6 +195,7 @@ def update_checkpoint(conn, dt: datetime):
     conn.execute(UPSERT_STATE, {"pipeline": PIPELINE_NAME, "checkpoint": dt})
 
 def build_query_filter(checkpoint_dt: datetime):
+    # filtro aplicado em PRODUCTS.updated_at
     safe_start = checkpoint_dt - SAFETY_WINDOW
     default_start_dt = parse_iso(DEFAULT_START)
     if safe_start < default_start_dt:
@@ -212,6 +218,7 @@ def to_int(v):
 
 def main():
     variants_count = 0
+    products_count = 0
 
     with engine.begin() as conn:
         conn.execute(DDL_PRODUCT_VARIANTS)
@@ -221,16 +228,17 @@ def main():
     print(f"PIPELINE={PIPELINE_NAME} checkpoint={iso_z(checkpoint_dt)} safety_start={iso_z(safe_start_dt)} query='{query_filter}'")
 
     after = None
-    max_seen_updated_dt = checkpoint_dt
+    # ✅ checkpoint vai avançar pelo product.updatedAt (ordenável)
+    max_seen_product_updated_dt = checkpoint_dt
 
     with engine.begin() as conn:
         while True:
             if should_stop_soon():
                 break
 
-            data = gql({"first": 100, "after": after, "query": query_filter})
-            edges = data["productVariants"]["edges"]
-            page = data["productVariants"]["pageInfo"]
+            data = gql({"first": 80, "after": after, "query": query_filter})
+            edges = data["products"]["edges"]
+            page = data["products"]["pageInfo"]
 
             if not edges:
                 if not page["hasNextPage"]:
@@ -240,37 +248,41 @@ def main():
                 continue
 
             for e in edges:
-                v = e["node"]
-                p = v.get("product") or {}
+                p = e["node"]
+                products_count += 1
 
-                v_updated = parse_iso(v.get("updatedAt"))
-                if v_updated and v_updated > max_seen_updated_dt:
-                    max_seen_updated_dt = v_updated
+                p_updated = parse_iso(p.get("updatedAt"))
+                if p_updated and p_updated > max_seen_product_updated_dt:
+                    max_seen_product_updated_dt = p_updated
 
-                conn.execute(UPSERT_VARIANT, {
-                    "variant_id": v.get("id"),
-                    "product_id": p.get("id"),
-                    "product_title": p.get("title"),
-                    "product_handle": p.get("handle"),
-                    "product_vendor": p.get("vendor"),
-                    "product_type": p.get("productType"),
-                    "product_status": p.get("status"),
+                variants = ((p.get("variants") or {}).get("nodes")) or []
+                for v in variants:
+                    v_updated = parse_iso(v.get("updatedAt"))
 
-                    "variant_title": v.get("title"),
-                    "sku": v.get("sku"),
-                    "barcode": v.get("barcode"),
+                    conn.execute(UPSERT_VARIANT, {
+                        "variant_id": v.get("id"),
+                        "product_id": p.get("id"),
+                        "product_title": p.get("title"),
+                        "product_handle": p.get("handle"),
+                        "product_vendor": p.get("vendor"),
+                        "product_type": p.get("productType"),
+                        "product_status": p.get("status"),
 
-                    "price": to_num(v.get("price")),
-                    "compare_at_price": to_num(v.get("compareAtPrice")),
-                    "inventory_quantity": to_int(v.get("inventoryQuantity")),
-                    "taxable": v.get("taxable"),
+                        "variant_title": v.get("title"),
+                        "sku": v.get("sku"),
+                        "barcode": v.get("barcode"),
 
-                    "variant_created_at": parse_iso(v.get("createdAt")),
-                    "variant_updated_at": v_updated,
+                        "price": to_num(v.get("price")),
+                        "compare_at_price": to_num(v.get("compareAtPrice")),
+                        "inventory_quantity": to_int(v.get("inventoryQuantity")),
+                        "taxable": v.get("taxable"),
 
-                    "selected_options": v.get("selectedOptions"),
-                })
-                variants_count += 1
+                        "variant_created_at": parse_iso(v.get("createdAt")),
+                        "variant_updated_at": v_updated,
+
+                        "selected_options": v.get("selectedOptions"),
+                    })
+                    variants_count += 1
 
             if not page["hasNextPage"]:
                 break
@@ -278,9 +290,9 @@ def main():
             after = page["endCursor"]
             time.sleep(0.35)
 
-        # checkpoint só avança se viu algo
-        if max_seen_updated_dt > checkpoint_dt:
-            update_checkpoint(conn, max_seen_updated_dt)
+        # ✅ checkpoint só avança se viu products mais novos
+        if max_seen_product_updated_dt > checkpoint_dt:
+            update_checkpoint(conn, max_seen_product_updated_dt)
 
         # tenta refresh da MV (se ela existir)
         try:
@@ -289,15 +301,25 @@ def main():
         except Exception:
             refreshed = False
 
+    # logs finais
     if variants_count == 0:
-        print(f"OK: upsert 0 variants. checkpoint={iso_z(max_seen_updated_dt)} (nada novo) refreshed_mv={refreshed}")
+        print(
+            f"OK: upsert 0 variants (products_scanned={products_count}). "
+            f"checkpoint={iso_z(max_seen_product_updated_dt)} (nada novo) refreshed_mv={refreshed}"
+        )
         return
 
     if should_stop_soon():
-        print(f"PARTIAL: upsert {variants_count} variants. checkpoint={iso_z(max_seen_updated_dt)} refreshed_mv={refreshed}")
+        print(
+            f"PARTIAL: upsert {variants_count} variants (products_scanned={products_count}). "
+            f"checkpoint={iso_z(max_seen_product_updated_dt)} refreshed_mv={refreshed}"
+        )
         return
 
-    print(f"OK: upsert {variants_count} variants. checkpoint={iso_z(max_seen_updated_dt)} refreshed_mv={refreshed}")
+    print(
+        f"OK: upsert {variants_count} variants (products_scanned={products_count}). "
+        f"checkpoint={iso_z(max_seen_product_updated_dt)} refreshed_mv={refreshed}"
+    )
 
 if __name__ == "__main__":
     main()
