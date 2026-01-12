@@ -1,0 +1,90 @@
+name: GA4 ETL (Daily Funnel)
+
+on:
+  schedule:
+    # roda 1x por dia às 06:10 UTC (03:10 São Paulo)
+    - cron: "10 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run-ga4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run GA4 Daily Funnel
+        env:
+          GA4_PROPERTY_ID: ${{ secrets.GA4_PROPERTY_ID }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          SHOPIFY_API_VERSION: "2025-01"
+          MAX_RUNTIME_MIN: "18"
+          SAFETY_DAYS: "3"
+        run: |
+          set -euo pipefail
+          start_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Cria o arquivo do Service Account JSON a partir do Secret
+          cat > ga4_sa.json << 'EOF'
+          ${{ secrets.GA4_SERVICE_ACCOUNT_JSON }}
+          EOF
+
+          export GOOGLE_APPLICATION_CREDENTIALS="$PWD/ga4_sa.json"
+
+          python ga4_daily_funnel_to_postgres_incremental.py 2>&1 | tee ga4.log
+
+          end_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          last_ok=$(grep -E "OK:|PARTIAL:" ga4.log | tail -n 1 || true)
+
+          {
+            echo "## GA4 ETL - Daily Funnel (General) - Resumo"
+            echo ""
+            echo "- Início (UTC): \`$start_ts\`"
+            echo "- Fim (UTC): \`$end_ts\`"
+            echo "- Property ID: \`${GA4_PROPERTY_ID}\`"
+            echo ""
+            echo "### Último status"
+            if [ -n "$last_ok" ]; then
+              echo "\`$last_ok\`"
+            else
+              echo "_Não encontrei linha OK/PARTIAL no log (ver logs completos)._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Send email on failure
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.ALERT_EMAIL_FROM }}
+          password: ${{ secrets.ALERT_EMAIL_PASSWORD }}
+          subject: "❌ Erro no ETL GA4 - BI Crown"
+          to: ${{ secrets.ALERT_EMAIL_TO }}
+          from: ${{ secrets.ALERT_EMAIL_FROM }}
+          body: |
+            O job de ETL GA4 (Daily Funnel) falhou.
+
+            Repositório: ${{ github.repository }}
+            Workflow: ${{ github.workflow }}
+            Job: ${{ github.job }}
+            Data: ${{ github.run_started_at }}
+
+            Logs:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

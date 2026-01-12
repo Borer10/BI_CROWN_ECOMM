@@ -2,3 +2,5 @@ requests
 python-dotenv
 sqlalchemy
 psycopg2-binary
+google-analytics-data
+google-auth
