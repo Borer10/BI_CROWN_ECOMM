@@ -13,6 +13,8 @@ from google.analytics.data_v1beta.types import (
     RunReportRequest,
 )
 from google.oauth2 import service_account
+from google.api_core.exceptions import InvalidArgument  # ✅ validador
+
 
 # =========================
 # ENV
@@ -68,30 +70,32 @@ set checkpoint = excluded.checkpoint,
     updated_at = now();
 """
 
+# ✅ alinhado com seu banco (checkouts)
 DDL_TABLE = """
 create table if not exists public.ga4_daily_funnel (
   date date primary key,
   active_users bigint,
   sessions bigint,
   add_to_carts bigint,
-  begin_checkouts bigint,
+  checkouts bigint,
   purchases bigint,
   revenue numeric,
   updated_db_at timestamptz not null default now()
 );
 """
 
+# ✅ alinhado com seu banco (checkouts)
 UPSERT_FUNNEL = """
 insert into public.ga4_daily_funnel (
-  date, active_users, sessions, add_to_carts, begin_checkouts, purchases, revenue, updated_db_at
+  date, active_users, sessions, add_to_carts, checkouts, purchases, revenue, updated_db_at
 ) values (
-  %(date)s, %(active_users)s, %(sessions)s, %(add_to_carts)s, %(begin_checkouts)s, %(purchases)s, %(revenue)s, now()
+  %(date)s, %(active_users)s, %(sessions)s, %(add_to_carts)s, %(checkouts)s, %(purchases)s, %(revenue)s, now()
 )
 on conflict (date) do update set
   active_users = excluded.active_users,
   sessions = excluded.sessions,
   add_to_carts = excluded.add_to_carts,
-  begin_checkouts = excluded.begin_checkouts,
+  checkouts = excluded.checkouts,
   purchases = excluded.purchases,
   revenue = excluded.revenue,
   updated_db_at = now();
@@ -130,10 +134,6 @@ def set_checkpoint(cur, checkpoint_dt: datetime):
     cur.execute(SQL_UPSERT_STATE, {"pipeline": PIPELINE_NAME, "checkpoint": checkpoint_dt})
 
 
-def ymd(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%d")
-
-
 def parse_ga4_date(s: str):
     # GA4 "date" vem como YYYYMMDD
     return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
@@ -145,7 +145,7 @@ def build_date_window(checkpoint_dt: datetime | None):
     - Se EFFECTIVE_START_DATE setado: começa nele
     - Senão, se não tem checkpoint: começa bem no passado (ex: 3650 dias)
     - Sempre reprocessa SAFETY_DAYS para trás para corrigir ajustes tardios
-    - Vai até ontem (para evitar dia de hoje parcial), mas você pode mudar para 'today' se quiser.
+    - Vai até ontem (para evitar dia de hoje parcial)
     """
     now_utc = datetime.now(timezone.utc)
 
@@ -157,10 +157,8 @@ def build_date_window(checkpoint_dt: datetime | None):
         else:
             start = checkpoint_dt - timedelta(days=SAFETY_DAYS)
 
-    # GA4 por dia: vamos até ontem (dia fechado)
     end = now_utc - timedelta(days=1)
 
-    # se start > end, não tem nada a fazer
     if start.date() > end.date():
         return None
 
@@ -178,7 +176,7 @@ def ga4_client():
 def fetch_daily_funnel(client: BetaAnalyticsDataClient, start_date: str, end_date: str):
     """
     Retorna rows com:
-    date, activeUsers, sessions, addToCarts, beginCheckouts, purchases, totalRevenue
+    date, activeUsers, sessions, addToCarts, checkouts, purchases, totalRevenue
     """
     req = RunReportRequest(
         property=f"properties/{GA4_PROPERTY_ID}",
@@ -188,7 +186,7 @@ def fetch_daily_funnel(client: BetaAnalyticsDataClient, start_date: str, end_dat
             Metric(name="activeUsers"),
             Metric(name="sessions"),
             Metric(name="addToCarts"),
-            Metric(name="beginCheckouts"),
+            Metric(name="checkouts"),
             Metric(name="purchases"),
             Metric(name="totalRevenue"),
         ],
@@ -196,8 +194,24 @@ def fetch_daily_funnel(client: BetaAnalyticsDataClient, start_date: str, end_dat
     return client.run_report(req)
 
 
+def format_invalid_argument_message(err: Exception, dimensions: list[str], metrics: list[str]) -> str:
+    # mensagens do GA4 geralmente trazem "Field X is not a valid metric"
+    return (
+        "\n⛔ GA4 INVALID_ARGUMENT (provavelmente métrica/dimensão inválida)\n"
+        f"- Property: {GA4_PROPERTY_ID}\n"
+        f"- Dimensões pedidas: {dimensions}\n"
+        f"- Métricas pedidas: {metrics}\n"
+        f"- Detalhe do GA4: {err}\n"
+        "\nDica: confira os nomes no schema oficial do GA4 Data API.\n"
+    )
+
+
 def main():
     require_env()
+
+    # ✅ centraliza as métricas/dimensões para o validador imprimir
+    REQUEST_DIMENSIONS = ["date"]
+    REQUEST_METRICS = ["activeUsers", "sessions", "addToCarts", "checkouts", "purchases", "totalRevenue"]
 
     with connect_db() as conn:
         conn.autocommit = False
@@ -228,11 +242,15 @@ def main():
                 print("PARTIAL: max runtime antes de chamar GA4.")
                 return
 
-            resp = fetch_daily_funnel(client, start_date, end_date)
+            # ✅ VALIDADOR: captura INVALID_ARGUMENT e imprime métricas/dimensões
+            try:
+                resp = fetch_daily_funnel(client, start_date, end_date)
+            except InvalidArgument as e:
+                print(format_invalid_argument_message(e, REQUEST_DIMENSIONS, REQUEST_METRICS))
+                raise SystemExit(1)
 
             rows = resp.rows or []
             if not rows:
-                # ainda assim avança checkpoint para end_date (porque a janela foi “varrida”)
                 new_cp = datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc)
                 set_checkpoint(cur, new_cp)
                 conn.commit()
@@ -255,7 +273,7 @@ def main():
                 active_users = int(float(m[0])) if m[0] else 0
                 sessions = int(float(m[1])) if m[1] else 0
                 add_to_carts = int(float(m[2])) if m[2] else 0
-                begin_checkouts = int(float(m[3])) if m[3] else 0
+                checkouts = int(float(m[3])) if m[3] else 0
                 purchases = int(float(m[4])) if m[4] else 0
                 revenue = float(m[5]) if m[5] else 0.0
 
@@ -266,7 +284,7 @@ def main():
                         "active_users": active_users,
                         "sessions": sessions,
                         "add_to_carts": add_to_carts,
-                        "begin_checkouts": begin_checkouts,
+                        "checkouts": checkouts,
                         "purchases": purchases,
                         "revenue": revenue,
                     },
@@ -276,8 +294,6 @@ def main():
 
             conn.commit()
 
-            # checkpoint avança para o fim do período processado (end_date),
-            # mas de forma segura: se por algum motivo não veio last_date_seen, não avança.
             if last_date_seen:
                 new_cp = datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc)
                 set_checkpoint(cur, new_cp)
