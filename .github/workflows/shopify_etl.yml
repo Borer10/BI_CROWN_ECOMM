@@ -1,8 +1,12 @@
 name: Shopify ETL Incremental
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"
+  # schedule:
+  #   # Executa a cada 3 horas (UTC)
+  #   # Exemplo de execuções: 00:00, 03:00, 06:00, 09:00...
+  #   - cron: "0 */3 * * *"
+
+  # Permite execução manual pelo GitHub Actions
   workflow_dispatch:
 
 permissions:
