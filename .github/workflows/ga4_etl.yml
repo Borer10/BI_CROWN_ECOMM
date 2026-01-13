@@ -3,7 +3,7 @@ name: GA4 ETL (Daily Funnel)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 6 * * *"  # 03:00 São Paulo - diário
+    - cron: "0 6 * * *"  # 06:00 UTC = 03:00 America/Sao_Paulo
 
 jobs:
   run-ga4:
