@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import os
-import sys
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -13,8 +12,7 @@ from google.analytics.data_v1beta.types import (
     RunReportRequest,
 )
 from google.oauth2 import service_account
-from google.api_core.exceptions import InvalidArgument  # ✅ validador
-
+from google.api_core.exceptions import InvalidArgument
 
 # =========================
 # ENV
@@ -23,7 +21,6 @@ GA4_PROPERTY_ID = os.getenv("GA4_PROPERTY_ID")  # ex: "290124262"
 POSTGRES_URL = os.getenv("POSTGRES_URL")
 
 # JSON do service account vem via Secret e é escrito em arquivo pelo workflow
-# Aqui a gente usa o caminho do arquivo (padrão do Google SDK)
 GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
 
 PIPELINE_NAME = os.getenv("PIPELINE_NAME", "ga4_daily_funnel_general")
@@ -32,17 +29,12 @@ PIPELINE_NAME = os.getenv("PIPELINE_NAME", "ga4_daily_funnel_general")
 SAFETY_DAYS = int(os.getenv("SAFETY_DAYS", "3"))
 
 # Se quiser forçar backfill manual, use:
-# EFFECTIVE_START_DATE="2025-01-01"
+# EFFECTIVE_START_DATE="2025-12-01"
 EFFECTIVE_START_DATE = os.getenv("EFFECTIVE_START_DATE", "").strip()
 
 # Limite de tempo opcional (0 = sem limite)
 MAX_RUNTIME_MIN = int(os.getenv("MAX_RUNTIME_MIN", "0"))
 START_TIME = time.time()
-
-# Timezone: sua propriedade já está São Paulo, mas o GA4 retorna por "date" (string YYYYMMDD).
-# Aqui a gente grava em date (sem timezone), alinhado ao GA4.
-# =========================
-
 
 # =========================
 # Postgres (etl_state + tabela destino)
@@ -70,7 +62,7 @@ set checkpoint = excluded.checkpoint,
     updated_at = now();
 """
 
-# ✅ alinhado com seu banco (checkouts)
+# (idempotente) — mantém compatível com seu schema atual
 DDL_TABLE = """
 create table if not exists public.ga4_daily_funnel (
   date date primary key,
@@ -78,25 +70,24 @@ create table if not exists public.ga4_daily_funnel (
   sessions bigint,
   add_to_carts bigint,
   checkouts bigint,
-  purchases bigint,
+  transactions bigint,
   revenue numeric,
   updated_db_at timestamptz not null default now()
 );
 """
 
-# ✅ alinhado com seu banco (checkouts)
 UPSERT_FUNNEL = """
 insert into public.ga4_daily_funnel (
-  date, active_users, sessions, add_to_carts, checkouts, purchases, revenue, updated_db_at
+  date, active_users, sessions, add_to_carts, checkouts, transactions, revenue, updated_db_at
 ) values (
-  %(date)s, %(active_users)s, %(sessions)s, %(add_to_carts)s, %(checkouts)s, %(purchases)s, %(revenue)s, now()
+  %(date)s, %(active_users)s, %(sessions)s, %(add_to_carts)s, %(checkouts)s, %(transactions)s, %(revenue)s, now()
 )
 on conflict (date) do update set
   active_users = excluded.active_users,
   sessions = excluded.sessions,
   add_to_carts = excluded.add_to_carts,
   checkouts = excluded.checkouts,
-  purchases = excluded.purchases,
+  transactions = excluded.transactions,
   revenue = excluded.revenue,
   updated_db_at = now();
 """
@@ -124,7 +115,7 @@ def connect_db():
     return psycopg2.connect(POSTGRES_URL)
 
 
-def get_checkpoint(cur) -> datetime | None:
+def get_checkpoint(cur):
     cur.execute(SQL_GET_STATE, {"pipeline": PIPELINE_NAME})
     row = cur.fetchone()
     return row[0] if row else None
@@ -134,18 +125,18 @@ def set_checkpoint(cur, checkpoint_dt: datetime):
     cur.execute(SQL_UPSERT_STATE, {"pipeline": PIPELINE_NAME, "checkpoint": checkpoint_dt})
 
 
-def parse_ga4_date(s: str):
+def parse_ga4_date(s: str) -> str:
     # GA4 "date" vem como YYYYMMDD
     return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
 
 
-def build_date_window(checkpoint_dt: datetime | None):
+def build_date_window(checkpoint_dt):
     """
     Estratégia:
     - Se EFFECTIVE_START_DATE setado: começa nele
     - Senão, se não tem checkpoint: começa bem no passado (ex: 3650 dias)
-    - Sempre reprocessa SAFETY_DAYS para trás para corrigir ajustes tardios
-    - Vai até ontem (para evitar dia de hoje parcial)
+    - Sempre reprocessa SAFETY_DAYS para trás
+    - Vai até ontem (dia fechado)
     """
     now_utc = datetime.now(timezone.utc)
 
@@ -174,44 +165,20 @@ def ga4_client():
 
 
 def fetch_daily_funnel(client: BetaAnalyticsDataClient, start_date: str, end_date: str):
-    """
-    Retorna rows com:
-    date, activeUsers, sessions, addToCarts, checkouts, purchases, totalRevenue
-    """
+    dimensions = ["date"]
+    metrics = ["activeUsers", "sessions", "addToCarts", "checkouts", "transactions", "totalRevenue"]
+
     req = RunReportRequest(
         property=f"properties/{GA4_PROPERTY_ID}",
         date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-        dimensions=[Dimension(name="date")],
-        metrics=[
-            Metric(name="activeUsers"),
-            Metric(name="sessions"),
-            Metric(name="addToCarts"),
-            Metric(name="checkouts"),
-            Metric(name="purchases"),
-            Metric(name="totalRevenue"),
-        ],
+        dimensions=[Dimension(name=d) for d in dimensions],
+        metrics=[Metric(name=m) for m in metrics],
     )
-    return client.run_report(req)
-
-
-def format_invalid_argument_message(err: Exception, dimensions: list[str], metrics: list[str]) -> str:
-    # mensagens do GA4 geralmente trazem "Field X is not a valid metric"
-    return (
-        "\n⛔ GA4 INVALID_ARGUMENT (provavelmente métrica/dimensão inválida)\n"
-        f"- Property: {GA4_PROPERTY_ID}\n"
-        f"- Dimensões pedidas: {dimensions}\n"
-        f"- Métricas pedidas: {metrics}\n"
-        f"- Detalhe do GA4: {err}\n"
-        "\nDica: confira os nomes no schema oficial do GA4 Data API.\n"
-    )
+    return req, dimensions, metrics, client.run_report(req)
 
 
 def main():
     require_env()
-
-    # ✅ centraliza as métricas/dimensões para o validador imprimir
-    REQUEST_DIMENSIONS = ["date"]
-    REQUEST_METRICS = ["activeUsers", "sessions", "addToCarts", "checkouts", "purchases", "totalRevenue"]
 
     with connect_db() as conn:
         conn.autocommit = False
@@ -242,11 +209,17 @@ def main():
                 print("PARTIAL: max runtime antes de chamar GA4.")
                 return
 
-            # ✅ VALIDADOR: captura INVALID_ARGUMENT e imprime métricas/dimensões
+            # ======= chamada GA4 com validador =======
             try:
-                resp = fetch_daily_funnel(client, start_date, end_date)
+                _, dims, mets, resp = fetch_daily_funnel(client, start_date, end_date)
             except InvalidArgument as e:
-                print(format_invalid_argument_message(e, REQUEST_DIMENSIONS, REQUEST_METRICS))
+                msg = str(e)
+                print("\n⛔ GA4 INVALID_ARGUMENT (provavelmente métrica/dimensão inválida)")
+                print(f"- Property: {GA4_PROPERTY_ID}")
+                print(f"- Dimensões pedidas: {dims}")
+                print(f"- Métricas pedidas: {mets}")
+                print(f"- Detalhe do GA4: {msg}\n")
+                print("Dica: confira os nomes no schema oficial do GA4 Data API.")
                 raise SystemExit(1)
 
             rows = resp.rows or []
@@ -269,12 +242,12 @@ def main():
                 date_str = parse_ga4_date(date_raw)      # YYYY-MM-DD
 
                 m = [mv.value for mv in r.metric_values]
-
+                # ordem: activeUsers, sessions, addToCarts, checkouts, transactions, totalRevenue
                 active_users = int(float(m[0])) if m[0] else 0
                 sessions = int(float(m[1])) if m[1] else 0
                 add_to_carts = int(float(m[2])) if m[2] else 0
                 checkouts = int(float(m[3])) if m[3] else 0
-                purchases = int(float(m[4])) if m[4] else 0
+                transactions = int(float(m[4])) if m[4] else 0
                 revenue = float(m[5]) if m[5] else 0.0
 
                 cur.execute(
@@ -285,7 +258,7 @@ def main():
                         "sessions": sessions,
                         "add_to_carts": add_to_carts,
                         "checkouts": checkouts,
-                        "purchases": purchases,
+                        "transactions": transactions,
                         "revenue": revenue,
                     },
                 )
