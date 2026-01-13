@@ -41,10 +41,18 @@ jobs:
 
           start_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # Cria o arquivo do Service Account JSON a partir do Secret
-          cat > ga4_sa.json << 'EOF'
-          $GA4_SERVICE_ACCOUNT_JSON
-          EOF
+          # Cria o arquivo do Service Account JSON a partir do Secret (CORRETO)
+          printf '%s' "$GA4_SERVICE_ACCOUNT_JSON" > ga4_sa.json
+
+          # Validador "à prova de leigos": garante que é JSON válido e mostra campos básicos
+          python - << 'PY'
+          import json
+          with open("ga4_sa.json","r",encoding="utf-8") as f:
+              data = json.load(f)
+          print("OK: JSON válido ✅")
+          print("client_email:", data.get("client_email"))
+          print("project_id:", data.get("project_id"))
+          PY
 
           export GOOGLE_APPLICATION_CREDENTIALS="$PWD/ga4_sa.json"
 
@@ -64,7 +72,7 @@ jobs:
             echo ""
             echo "- Início (UTC): \`$start_ts\`"
             echo "- Fim (UTC): \`$end_ts\`"
-            echo "- Property ID: \`${GA4_PROPERTY_ID}\`"
+            echo "- Property ID: \`$GA4_PROPERTY_ID\`"
             echo ""
             echo "### General"
             if [ -n "$last_ok_general" ]; then
