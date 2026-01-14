@@ -23,7 +23,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install psycopg2-binary google-analytics-data python-dotenv
 
-      - name: Run GA4 Daily Funnel (General + Channel)
+      - name: Run GA4 Daily Funnel (General + Channel + Acquisition)
         env:
           GA4_PROPERTY_ID: ${{ secrets.GA4_PROPERTY_ID }}
           POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
@@ -62,13 +62,17 @@ jobs:
           echo "Running GA4 Channel..."
           python ga4_daily_funnel_channel_to_postgres_incremental.py 2>&1 | tee ga4_channel.log
 
+          echo "Running GA4 Acquisition Daily..."
+          python ga4_acquisition_daily_to_postgres_incremental.py 2>&1 | tee ga4_acq_daily.log
+
           end_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           last_ok_general=$(grep -E "OK:|PARTIAL:" ga4_general.log | tail -n 1 || true)
           last_ok_channel=$(grep -E "OK:|PARTIAL:" ga4_channel.log | tail -n 1 || true)
+          last_ok_acq=$(grep -E "OK:|PARTIAL:" ga4_acq_daily.log | tail -n 1 || true)
 
           {
-            echo "## GA4 ETL - Daily Funnel (General + Channel) - Resumo"
+            echo "## GA4 ETL - Daily Funnel (General + Channel + Acquisition) - Resumo"
             echo ""
             echo "- Início (UTC): \`$start_ts\`"
             echo "- Fim (UTC): \`$end_ts\`"
@@ -86,5 +90,12 @@ jobs:
               echo "\`$last_ok_channel\`"
             else
               echo "_Não encontrei linha OK/PARTIAL no log do Channel (ver logs completos)._"
+            fi
+            echo ""
+            echo "### Acquisition Daily"
+            if [ -n "$last_ok_acq" ]; then
+              echo "\`$last_ok_acq\`"
+            else
+              echo "_Não encontrei linha OK/PARTIAL no log do Acquisition (ver logs completos)._"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
