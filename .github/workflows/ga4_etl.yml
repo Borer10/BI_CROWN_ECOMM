@@ -1,4 +1,4 @@
-name: GA4 ETL (Daily Funnel)
+name: GA4 ETL (Daily Funnel + Channel + Events)
 
 on:
   workflow_dispatch:
@@ -23,28 +23,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install psycopg2-binary google-analytics-data python-dotenv
 
-      - name: Run GA4 Daily Funnel (General + Channel + Acquisition)
+      - name: Run GA4 ETL (General + Channel + Events)
         env:
           GA4_PROPERTY_ID: ${{ secrets.GA4_PROPERTY_ID }}
           POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
           GA4_SERVICE_ACCOUNT_JSON: ${{ secrets.GA4_SERVICE_ACCOUNT_JSON }}
 
-          # ajustes finos
           MAX_RUNTIME_MIN: "18"
           SAFETY_DAYS: "3"
-
-          # se quiser forçar um start fixo (opcional):
-          # EFFECTIVE_START_DATE: "2025-12-01"
         shell: bash
         run: |
           set -euo pipefail
 
           start_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # Cria o arquivo do Service Account JSON a partir do Secret (CORRETO)
+          # ===== Service Account JSON =====
           printf '%s' "$GA4_SERVICE_ACCOUNT_JSON" > ga4_sa.json
 
-          # Validador "à prova de leigos": garante que é JSON válido e mostra campos básicos
+          # Validação simples (à prova de leigos)
           python - << 'PY'
           import json
           with open("ga4_sa.json","r",encoding="utf-8") as f:
@@ -56,46 +52,34 @@ jobs:
 
           export GOOGLE_APPLICATION_CREDENTIALS="$PWD/ga4_sa.json"
 
-          echo "Running GA4 General..."
+          echo "▶️ Running GA4 Daily Funnel (General)..."
           python ga4_daily_funnel_to_postgres_incremental.py 2>&1 | tee ga4_general.log
 
-          echo "Running GA4 Channel..."
+          echo "▶️ Running GA4 Daily Funnel (Channel)..."
           python ga4_daily_funnel_channel_to_postgres_incremental.py 2>&1 | tee ga4_channel.log
 
-          echo "Running GA4 Acquisition Daily..."
-          python ga4_acquisition_daily_to_postgres_incremental.py 2>&1 | tee ga4_acq_daily.log
+          echo "▶️ Running GA4 Events (Conversions)..."
+          python ga4_events_daily_to_postgres_incremental.py 2>&1 | tee ga4_events.log
 
           end_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           last_ok_general=$(grep -E "OK:|PARTIAL:" ga4_general.log | tail -n 1 || true)
           last_ok_channel=$(grep -E "OK:|PARTIAL:" ga4_channel.log | tail -n 1 || true)
-          last_ok_acq=$(grep -E "OK:|PARTIAL:" ga4_acq_daily.log | tail -n 1 || true)
+          last_ok_events=$(grep -E "OK:|PARTIAL:" ga4_events.log | tail -n 1 || true)
 
           {
-            echo "## GA4 ETL - Daily Funnel (General + Channel + Acquisition) - Resumo"
+            echo "## GA4 ETL - Resumo"
             echo ""
             echo "- Início (UTC): \`$start_ts\`"
             echo "- Fim (UTC): \`$end_ts\`"
             echo "- Property ID: \`$GA4_PROPERTY_ID\`"
             echo ""
-            echo "### General"
-            if [ -n "$last_ok_general" ]; then
-              echo "\`$last_ok_general\`"
-            else
-              echo "_Não encontrei linha OK/PARTIAL no log do General (ver logs completos)._"
-            fi
+            echo "### Funnel Geral"
+            echo "${last_ok_general:-_Sem status_}"
             echo ""
-            echo "### Channel"
-            if [ -n "$last_ok_channel" ]; then
-              echo "\`$last_ok_channel\`"
-            else
-              echo "_Não encontrei linha OK/PARTIAL no log do Channel (ver logs completos)._"
-            fi
+            echo "### Funnel por Canal"
+            echo "${last_ok_channel:-_Sem status_}"
             echo ""
-            echo "### Acquisition Daily"
-            if [ -n "$last_ok_acq" ]; then
-              echo "\`$last_ok_acq\`"
-            else
-              echo "_Não encontrei linha OK/PARTIAL no log do Acquisition (ver logs completos)._"
-            fi
+            echo "### Eventos / Conversões"
+            echo "${last_ok_events:-_Sem status_}"
           } >> "$GITHUB_STEP_SUMMARY"
