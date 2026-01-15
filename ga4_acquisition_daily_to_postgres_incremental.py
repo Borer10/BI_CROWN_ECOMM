@@ -24,7 +24,6 @@ EFFECTIVE_START_DATE = os.getenv("EFFECTIVE_START_DATE", "").strip()
 MAX_RUNTIME_MIN = int(os.getenv("MAX_RUNTIME_MIN", "0"))
 START_TIME = time.time()
 
-
 # =========================
 # Postgres DDL + State
 # =========================
@@ -51,6 +50,7 @@ set checkpoint = excluded.checkpoint,
     updated_at = now();
 """
 
+# Tabela base (mantém compatibilidade com seu schema atual)
 DDL_TABLE = """
 create table if not exists public.ga4_acquisition_daily (
   date date not null,
@@ -65,19 +65,31 @@ create table if not exists public.ga4_acquisition_daily (
   engagement_rate numeric,
   avg_session_duration numeric,
 
+  -- NOVOS (opcionais, mas vamos garantir via ALTER também)
+  transactions bigint,
+  revenue numeric,
+
   updated_db_at timestamptz not null default now(),
   primary key (date, source, medium, campaign)
 );
 """
 
+# Garante que as colunas novas existam mesmo se a tabela já foi criada antes
+ALTERS = [
+    "alter table public.ga4_acquisition_daily add column if not exists transactions bigint;",
+    "alter table public.ga4_acquisition_daily add column if not exists revenue numeric;",
+]
+
 UPSERT_SQL = """
 insert into public.ga4_acquisition_daily (
   date, source, medium, campaign,
   active_users, new_users, sessions, engaged_sessions, engagement_rate, avg_session_duration,
+  transactions, revenue,
   updated_db_at
 ) values (
   %(date)s, %(source)s, %(medium)s, %(campaign)s,
   %(active_users)s, %(new_users)s, %(sessions)s, %(engaged_sessions)s, %(engagement_rate)s, %(avg_session_duration)s,
+  %(transactions)s, %(revenue)s,
   now()
 )
 on conflict (date, source, medium, campaign) do update set
@@ -87,8 +99,23 @@ on conflict (date, source, medium, campaign) do update set
   engaged_sessions = excluded.engaged_sessions,
   engagement_rate = excluded.engagement_rate,
   avg_session_duration = excluded.avg_session_duration,
+  transactions = excluded.transactions,
+  revenue = excluded.revenue,
   updated_db_at = now();
 """
+
+# Dimensões e métricas (para o validador)
+DIMS = ["date", "sessionSource", "sessionMedium", "sessionCampaignName"]
+METS = [
+    "totalUsers",
+    "newUsers",
+    "sessions",
+    "engagedSessions",
+    "engagementRate",
+    "averageSessionDuration",
+    "transactions",
+    "totalRevenue",
+]
 
 
 def require_env():
@@ -124,7 +151,6 @@ def set_checkpoint(cur, checkpoint_dt: datetime):
 
 
 def parse_ga4_date(s: str) -> str:
-    # GA4 "date" vem como YYYYMMDD
     return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
 
 
@@ -139,7 +165,6 @@ def build_date_window(checkpoint_dt: Optional[datetime]):
         else:
             start = checkpoint_dt - timedelta(days=SAFETY_DAYS)
 
-    # até ontem (dia fechado)
     end = now_utc - timedelta(days=1)
 
     if start.date() > end.date():
@@ -157,15 +182,12 @@ def ga4_client():
 
 
 def fetch_acquisition_daily(client: BetaAnalyticsDataClient, start_date: str, end_date: str):
-    # Dimensões e métricas (listas explícitas para o validador)
-    dims = ["date", "sessionSource", "sessionMedium", "sessionCampaignName"]
-    mets = ["activeUsers", "newUsers", "sessions", "engagedSessions", "engagementRate", "averageSessionDuration"]
-
     req = RunReportRequest(
         property=f"properties/{GA4_PROPERTY_ID}",
         date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-        dimensions=[Dimension(name=d) for d in dims],
-        metrics=[Metric(name=m) for m in mets],
+        dimensions=[Dimension(name=d) for d in DIMS],
+        metrics=[Metric(name=m) for m in METS],
+        limit=250000,
     )
 
     try:
@@ -174,11 +196,25 @@ def fetch_acquisition_daily(client: BetaAnalyticsDataClient, start_date: str, en
         # Validador: mostrar exatamente o que foi pedido
         print("❌ GA4 INVALID_ARGUMENT (provavelmente métrica/dimensão inválida)")
         print(f"- Property: {GA4_PROPERTY_ID}")
-        print(f"- Dimensões pedidas: {dims}")
-        print(f"- Métricas pedidas: {mets}")
+        print(f"- Dimensões pedidas: {DIMS}")
+        print(f"- Métricas pedidas: {METS}")
         print(f"- Detalhe do GA4: {e}")
         print("\nDica: confira os nomes no schema oficial do GA4 Data API.")
-        raise
+        raise SystemExit(1)
+
+
+def to_int(x: str) -> int:
+    try:
+        return int(float(x)) if x else 0
+    except Exception:
+        return 0
+
+
+def to_float(x: str) -> float:
+    try:
+        return float(x) if x else 0.0
+    except Exception:
+        return 0.0
 
 
 def main():
@@ -189,10 +225,11 @@ def main():
         with conn.cursor() as cur:
             cur.execute(DDL_STATE)
             cur.execute(DDL_TABLE)
+            for sql in ALTERS:
+                cur.execute(sql)
             conn.commit()
 
             checkpoint_dt = get_checkpoint(cur)
-
             window = build_date_window(checkpoint_dt)
             if window is None:
                 print("OK: nada para atualizar (janela vazia).")
@@ -230,21 +267,21 @@ def main():
                     print("PARTIAL: atingiu max runtime durante upsert.")
                     break
 
-                # dimensões: date, source, medium, campaign
                 date_raw = r.dimension_values[0].value
                 source = r.dimension_values[1].value or "(not set)"
                 medium = r.dimension_values[2].value or "(not set)"
                 campaign = r.dimension_values[3].value or "(not set)"
-
                 date_str = parse_ga4_date(date_raw)
 
                 m = [mv.value for mv in r.metric_values]
-                active_users = int(float(m[0])) if m[0] else 0
-                new_users = int(float(m[1])) if m[1] else 0
-                sessions = int(float(m[2])) if m[2] else 0
-                engaged_sessions = int(float(m[3])) if m[3] else 0
-                engagement_rate = float(m[4]) if m[4] else 0.0
-                avg_session_duration = float(m[5]) if m[5] else 0.0
+                total_users = to_int(m[0])
+                new_users = to_int(m[1])
+                sessions = to_int(m[2])
+                engaged_sessions = to_int(m[3])
+                engagement_rate = to_float(m[4])
+                avg_session_duration = to_float(m[5])
+                transactions = to_int(m[6])
+                revenue = to_float(m[7])
 
                 cur.execute(
                     UPSERT_SQL,
@@ -253,12 +290,15 @@ def main():
                         "source": source,
                         "medium": medium,
                         "campaign": campaign,
-                        "active_users": active_users,
+                        # mantém o nome do seu banco:
+                        "active_users": total_users,
                         "new_users": new_users,
                         "sessions": sessions,
                         "engaged_sessions": engaged_sessions,
                         "engagement_rate": engagement_rate,
                         "avg_session_duration": avg_session_duration,
+                        "transactions": transactions,
+                        "revenue": revenue,
                     },
                 )
 
